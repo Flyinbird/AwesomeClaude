@@ -4,12 +4,14 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from awesome_claude.core.agent.loop import AgentLoop
 from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import create_dispatcher
 from awesome_claude.core.server.tcp import TCPServer
 from awesome_claude.core.task.manager import TaskManager
+from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.jsonrpc import (
     build_request,
     decode_message,
@@ -52,6 +54,7 @@ def build_server(tmp_path: Path, llm: Any) -> TCPServer:
             llm_client=llm,
             send_notification=send_notification,
             config=config,
+            agent_loop=AgentLoop(llm, ToolRegistry()),
         )
 
     return TCPServer(config.host, config.port, dispatcher, context_factory)
@@ -102,6 +105,10 @@ async def test_e2e_chat_streams_notifications(tmp_path: Path) -> None:
             stop_reason="end_turn",
             full_text="Hello world!",
             usage=TokenUsage(input_tokens=12, output_tokens=7),
+            message={
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Hello world!"}],
+            },
         ),
     ]
     server = build_server(tmp_path, FakeLLM(events))

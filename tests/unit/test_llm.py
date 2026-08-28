@@ -8,7 +8,12 @@ import anthropic
 import pytest
 
 from awesome_claude.core.llm.client import LLMClient
-from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent
+from awesome_claude.core.llm.events import (
+    DoneEvent,
+    TextDeltaEvent,
+    ToolUseEndEvent,
+    ToolUseStartEvent,
+)
 from awesome_claude.core.llm.exceptions import (
     LLMAuthError,
     LLMContentFilterError,
@@ -26,12 +31,47 @@ def _message_start(input_tokens: int = 12) -> SimpleNamespace:
     )
 
 
-def _text_delta(text: str) -> SimpleNamespace:
+def _text_delta(text: str, index: int | None = None) -> SimpleNamespace:
     """构造文本增量事件。"""
     return SimpleNamespace(
         type="content_block_delta",
+        index=index,
         delta=SimpleNamespace(type="text_delta", text=text),
     )
+
+
+def _block_start_text(index: int) -> SimpleNamespace:
+    """构造 text 块开始事件。"""
+    return SimpleNamespace(
+        type="content_block_start",
+        index=index,
+        content_block=SimpleNamespace(type="text", text=""),
+    )
+
+
+def _block_start_tool(index: int, block_id: str, name: str) -> SimpleNamespace:
+    """构造 tool_use 块开始事件。"""
+    return SimpleNamespace(
+        type="content_block_start",
+        index=index,
+        content_block=SimpleNamespace(
+            type="tool_use", id=block_id, name=name, input={}
+        ),
+    )
+
+
+def _input_json_delta(index: int, partial_json: str) -> SimpleNamespace:
+    """构造工具参数 JSON 增量事件。"""
+    return SimpleNamespace(
+        type="content_block_delta",
+        index=index,
+        delta=SimpleNamespace(type="input_json_delta", partial_json=partial_json),
+    )
+
+
+def _block_stop(index: int) -> SimpleNamespace:
+    """构造 content_block_stop 事件。"""
+    return SimpleNamespace(type="content_block_stop", index=index)
 
 
 def _message_delta(output_tokens: int, stop_reason: str) -> SimpleNamespace:
@@ -255,3 +295,85 @@ class TestChat:
         assert not fake.closed
         await client.close()
         assert fake.closed
+
+
+class TestToolUseEvents:
+    """工具调用流式事件测试。"""
+
+    async def test_tool_use_events_and_message_assembly(self) -> None:
+        events = [
+            _message_start(10),
+            _block_start_tool(0, "toolu_1", "get_time"),
+            _input_json_delta(0, '{"format":'),
+            _input_json_delta(0, '"%H:%M"}'),
+            _block_stop(0),
+            _message_delta(5, "tool_use"),
+            _message_stop(),
+        ]
+        client, _ = make_client(events)
+        got: list[Any] = []
+        async for event in client.chat_stream([{"role": "user", "content": "time?"}]):
+            got.append(event)
+
+        starts = [e for e in got if isinstance(e, ToolUseStartEvent)]
+        ends = [e for e in got if isinstance(e, ToolUseEndEvent)]
+        done = got[-1]
+
+        assert [s.name for s in starts] == ["get_time"]
+        assert [s.block_id for s in starts] == ["toolu_1"]
+        assert len(ends) == 1
+        assert ends[0].block_id == "toolu_1"
+        assert ends[0].name == "get_time"
+        assert ends[0].input == {"format": "%H:%M"}
+
+        assert isinstance(done, DoneEvent)
+        assert done.stop_reason == "tool_use"
+        assert done.message["role"] == "assistant"
+        assert done.message["content"] == [
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "get_time",
+                "input": {"format": "%H:%M"},
+            }
+        ]
+
+    async def test_text_then_tool_use_blocks_ordered(self) -> None:
+        events = [
+            _message_start(10),
+            _block_start_text(0),
+            _text_delta("现在时间 ", index=0),
+            _block_stop(0),
+            _block_start_tool(1, "toolu_1", "get_time"),
+            _input_json_delta(1, "{}"),
+            _block_stop(1),
+            _message_delta(3, "tool_use"),
+            _message_stop(),
+        ]
+        client, _ = make_client(events)
+        done: DoneEvent | None = None
+        async for event in client.chat_stream([{"role": "user", "content": "time?"}]):
+            if isinstance(event, DoneEvent):
+                done = event
+
+        assert done is not None
+        assert done.full_text == "现在时间 "
+        assert [b["type"] for b in done.message["content"]] == ["text", "tool_use"]
+        assert done.message["content"][0]["text"] == "现在时间 "
+
+    async def test_tool_params_passed_to_sdk(self) -> None:
+        tools = [{"name": "get_time", "description": "d", "input_schema": {}}]
+        client, fake = make_client(_stream_events())
+        async for _ in client.chat_stream(
+            [{"role": "user", "content": "q"}], tools=tools
+        ):
+            pass
+        assert fake.messages.stream_calls[0]["tools"] == tools
+        await client.close()
+
+    async def test_tools_omitted_when_empty(self) -> None:
+        client, fake = make_client(_stream_events())
+        async for _ in client.chat_stream([{"role": "user", "content": "q"}], tools=[]):
+            pass
+        assert "tools" not in fake.messages.stream_calls[0]
+        await client.close()

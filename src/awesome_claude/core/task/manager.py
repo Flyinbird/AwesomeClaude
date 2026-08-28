@@ -46,6 +46,8 @@ class TaskManager:
         start_time: float,
         stage: TaskStage,
         data: dict[str, Any],
+        *,
+        step_index: int | None = None,
     ) -> None:
         """记录一个阶段事件，自动计算 duration_ms。
 
@@ -54,8 +56,11 @@ class TaskManager:
             start_time: 任务开始时间。
             stage: 任务阶段。
             data: 附加上下文数据。
+            step_index: 所属 step 序号（可选）。
         """
-        await self._tracker.log_event(task_id, stage, data, start_time)
+        await self._tracker.log_event(
+            task_id, stage, data, start_time, step_index=step_index
+        )
 
     async def complete_task(
         self, task_id: str, start_time: float, data: dict[str, Any]
@@ -77,6 +82,8 @@ class TaskManager:
         start_time: float,
         error: Exception,
         failed_stage: TaskStage,
+        *,
+        step_index: int | None = None,
     ) -> None:
         """记录 TASK_FAILED 事件，包含错误信息与 traceback。
 
@@ -85,6 +92,7 @@ class TaskManager:
             start_time: 任务开始时间。
             error: 引发的异常。
             failed_stage: 失败时所在的任务阶段。
+            step_index: 失败时所在 step 序号（可选）。
         """
         data: dict[str, Any] = {
             "failed_stage": failed_stage.value,
@@ -92,4 +100,6 @@ class TaskManager:
             "error_message": str(error),
             "traceback": traceback.format_exc(),
         }
-        await self._tracker.log_event(task_id, TaskStage.TASK_FAILED, data, start_time)
+        await self._tracker.log_event(
+            task_id, TaskStage.TASK_FAILED, data, start_time, step_index=step_index
+        )

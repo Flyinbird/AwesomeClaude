@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from awesome_claude.core.agent.loop import AgentLoop
 from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.llm.client import LLMClient
 from awesome_claude.core.task.manager import TaskManager
@@ -19,3 +20,4 @@ class HandlerContext:
     llm_client: LLMClient
     send_notification: SendNotification
     config: ServerConfig
+    agent_loop: AgentLoop | None = None

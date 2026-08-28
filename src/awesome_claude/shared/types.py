@@ -10,9 +10,13 @@ class TaskStage(StrEnum):
 
     TASK_CREATED = "task_created"
     CONTEXT_BUILT = "context_built"
+    STEP_STARTED = "step_started"
     LLM_REQUEST_SENT = "llm_request_sent"
     LLM_STREAMING = "llm_streaming"
     LLM_RESPONSE_DONE = "llm_response_done"
+    TOOL_STARTED = "tool_started"
+    TOOL_COMPLETED = "tool_completed"
+    TOOL_FAILED = "tool_failed"
     TASK_COMPLETED = "task_completed"
     TASK_FAILED = "task_failed"
 
@@ -26,6 +30,7 @@ class TaskEvent:
     timestamp: str
     duration_ms: float
     data: dict[str, Any]
+    step_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

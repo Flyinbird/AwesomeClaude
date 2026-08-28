@@ -1,11 +1,17 @@
-"""chat 处理器 - LLM 对话（Phase 2）。"""
+"""chat 处理器 - 委托 AgentLoop 执行 LLM 对话（Phase 2/3）。"""
 
 import time
 from dataclasses import asdict
 from typing import Any
 
+from awesome_claude.core.agent.events import (
+    StepFinished,
+    StepStarted,
+    ToolFinished,
+    ToolStarted,
+)
 from awesome_claude.core.handlers.base import register_handler
-from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent
+from awesome_claude.core.llm.events import TextDeltaEvent
 from awesome_claude.core.llm.exceptions import (
     LLMAuthError,
     LLMError,
@@ -22,7 +28,7 @@ from awesome_claude.protocol.errors import (
 )
 from awesome_claude.protocol.methods import METHOD_CHAT, NOTIFY_CHAT_STREAM
 from awesome_claude.shared.logging.app_logger import get_app_logger
-from awesome_claude.shared.types import ChatResponse, TaskStage, TokenUsage
+from awesome_claude.shared.types import ChatResponse, TaskStage
 
 _logger = get_app_logger("core.handlers.chat")
 
@@ -49,8 +55,10 @@ async def handle_chat(
 ) -> dict[str, Any]:
     """处理 chat 请求的完整流程。
 
-    流程：TASK_CREATED → CONTEXT_BUILT → LLM_REQUEST_SENT → LLM_STREAMING
-    （推送 chat.stream 通知）→ LLM_RESPONSE_DONE → TASK_COMPLETED。
+    流程：TASK_CREATED → CONTEXT_BUILT →（每轮 step）STEP_STARTED →
+    LLM_REQUEST_SENT → LLM_STREAMING → LLM_RESPONSE_DONE →（工具调用）
+    TOOL_STARTED → TOOL_COMPLETED/TOOL_FAILED → TASK_COMPLETED。
+    实际对话由 AgentLoop 编排，支持多轮工具调用。
 
     Args:
         params: 必须包含 message 字段。
@@ -64,6 +72,9 @@ async def handle_chat(
 
     message = params["message"]
     task_manager = context.task_manager
+    agent_loop = context.agent_loop
+    if agent_loop is None:
+        return build_error_response(None, INTERNAL_ERROR, "agent loop 未配置")
 
     try:
         task_id, start_time = await task_manager.create_task(
@@ -73,82 +84,129 @@ async def handle_chat(
         _logger.exception("create task failed")
         return build_error_response(None, INTERNAL_ERROR, f"任务创建失败: {exc}")
 
+    chunk_index = 0
+    current_step = 0
+
+    async def on_event(event: Any) -> None:
+        nonlocal chunk_index
+        if isinstance(event, TextDeltaEvent):
+            chunk_index += 1
+            await context.send_notification(
+                NOTIFY_CHAT_STREAM,
+                {
+                    "task_id": task_id,
+                    "chunk_index": chunk_index,
+                    "text": event.text,
+                    "is_final": False,
+                },
+            )
+
+    async def on_step(event: Any) -> None:
+        nonlocal current_step
+        if isinstance(event, StepStarted):
+            current_step = event.step_index
+            await task_manager.record_stage(
+                task_id,
+                start_time,
+                TaskStage.STEP_STARTED,
+                {},
+                step_index=event.step_index,
+            )
+            await task_manager.record_stage(
+                task_id,
+                start_time,
+                TaskStage.LLM_REQUEST_SENT,
+                {"model": context.config.model},
+                step_index=event.step_index,
+            )
+            await task_manager.record_stage(
+                task_id,
+                start_time,
+                TaskStage.LLM_STREAMING,
+                {},
+                step_index=event.step_index,
+            )
+        elif isinstance(event, StepFinished):
+            await task_manager.record_stage(
+                task_id,
+                start_time,
+                TaskStage.LLM_RESPONSE_DONE,
+                {
+                    "stop_reason": event.stop_reason,
+                    "input_tokens": event.input_tokens,
+                    "output_tokens": event.output_tokens,
+                    "has_tool_calls": event.has_tool_calls,
+                },
+                step_index=event.step_index,
+            )
+        elif isinstance(event, ToolStarted):
+            await task_manager.record_stage(
+                task_id,
+                start_time,
+                TaskStage.TOOL_STARTED,
+                {"tool_name": event.tool_name, "args": event.args},
+                step_index=event.step_index,
+            )
+        elif isinstance(event, ToolFinished):
+            await task_manager.record_stage(
+                task_id,
+                start_time,
+                TaskStage.TOOL_FAILED if event.is_error else TaskStage.TOOL_COMPLETED,
+                {"tool_name": event.tool_name, "is_error": event.is_error},
+                step_index=event.step_index,
+            )
+
     try:
         await task_manager.record_stage(
             task_id, start_time, TaskStage.CONTEXT_BUILT, {"message_count": 1}
         )
-        messages = [{"role": "user", "content": message}]
 
-        await task_manager.record_stage(
-            task_id,
-            start_time,
-            TaskStage.LLM_REQUEST_SENT,
-            {"model": context.config.model},
-        )
+        result = await agent_loop.run(message, on_event=on_event, on_step=on_step)
 
-        chunk_index = 0
-        done_event: DoneEvent | None = None
-        await task_manager.record_stage(
-            task_id, start_time, TaskStage.LLM_STREAMING, {"chunk_index": 0}
-        )
-        async for event in context.llm_client.chat_stream(messages):
-            if isinstance(event, TextDeltaEvent):
-                chunk_index += 1
-                await context.send_notification(
-                    NOTIFY_CHAT_STREAM,
-                    {
-                        "task_id": task_id,
-                        "chunk_index": chunk_index,
-                        "text": event.text,
-                        "is_final": False,
-                    },
-                )
-            elif isinstance(event, DoneEvent):
-                done_event = event
-                await context.send_notification(
-                    NOTIFY_CHAT_STREAM,
-                    {
-                        "task_id": task_id,
-                        "chunk_index": chunk_index,
-                        "text": "",
-                        "is_final": True,
-                    },
-                )
-
-        await task_manager.record_stage(
-            task_id,
-            start_time,
-            TaskStage.LLM_RESPONSE_DONE,
+        await context.send_notification(
+            NOTIFY_CHAT_STREAM,
             {
-                "chunk_count": chunk_index,
-                "stop_reason": done_event.stop_reason if done_event else "",
-                "input_tokens": done_event.usage.input_tokens if done_event else 0,
-                "output_tokens": done_event.usage.output_tokens if done_event else 0,
+                "task_id": task_id,
+                "chunk_index": chunk_index,
+                "text": "",
+                "is_final": True,
             },
         )
 
         response = ChatResponse(
             task_id=task_id,
-            text=done_event.full_text if done_event else "",
-            stop_reason=done_event.stop_reason if done_event else "",
-            usage=(
-                done_event.usage
-                if done_event
-                else TokenUsage(input_tokens=0, output_tokens=0)
-            ),
+            text=result.text,
+            stop_reason=result.stop_reason,
+            usage=result.usage,
             duration_ms=(time.monotonic() - start_time) * 1000.0,
             model=context.config.model,
         )
         await task_manager.complete_task(
             task_id,
             start_time,
-            {"text_length": len(response.text), "stop_reason": response.stop_reason},
+            {
+                "text_length": len(response.text),
+                "stop_reason": response.stop_reason,
+                "steps": result.steps,
+            },
         )
         return asdict(response)
     except LLMError as exc:
-        await task_manager.fail_task(task_id, start_time, exc, _failed_stage(exc))
+        await task_manager.fail_task(
+            task_id,
+            start_time,
+            exc,
+            _failed_stage(exc),
+            step_index=current_step or None,
+        )
         return build_error_response(None, _error_code(exc), str(exc))
     except Exception as exc:
         _logger.exception("chat handler failed")
-        await task_manager.fail_task(task_id, start_time, exc, TaskStage.LLM_STREAMING)
+        await task_manager.fail_task(
+            task_id,
+            start_time,
+            exc,
+            TaskStage.LLM_STREAMING,
+            step_index=current_step or None,
+        )
         return build_error_response(None, INTERNAL_ERROR, f"Internal error: {exc}")

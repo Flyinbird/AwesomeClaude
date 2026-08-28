@@ -18,14 +18,18 @@ class TestTaskStage:
     def test_values(self) -> None:
         assert TaskStage.TASK_CREATED.value == "task_created"
         assert TaskStage.CONTEXT_BUILT.value == "context_built"
+        assert TaskStage.STEP_STARTED.value == "step_started"
         assert TaskStage.LLM_REQUEST_SENT.value == "llm_request_sent"
         assert TaskStage.LLM_STREAMING.value == "llm_streaming"
         assert TaskStage.LLM_RESPONSE_DONE.value == "llm_response_done"
+        assert TaskStage.TOOL_STARTED.value == "tool_started"
+        assert TaskStage.TOOL_COMPLETED.value == "tool_completed"
+        assert TaskStage.TOOL_FAILED.value == "tool_failed"
         assert TaskStage.TASK_COMPLETED.value == "task_completed"
         assert TaskStage.TASK_FAILED.value == "task_failed"
 
     def test_member_count(self) -> None:
-        assert len(TaskStage) == 7
+        assert len(TaskStage) == 11
 
     def test_is_str_enum(self) -> None:
         assert isinstance(TaskStage.TASK_CREATED, str)
@@ -48,6 +52,18 @@ class TestTaskEvent:
         assert event.timestamp == "2026-08-27T00:00:00+00:00"
         assert event.duration_ms == 1.5
         assert event.data == {"k": "v"}
+        assert event.step_index is None
+
+    def test_step_index(self) -> None:
+        event = TaskEvent(
+            task_id="t1",
+            stage=TaskStage.LLM_RESPONSE_DONE,
+            timestamp="2026-08-27T00:00:00+00:00",
+            duration_ms=1.5,
+            data={},
+            step_index=2,
+        )
+        assert event.step_index == 2
 
     def test_serialization_to_json(self) -> None:
         event = TaskEvent(

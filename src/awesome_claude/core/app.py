@@ -6,12 +6,15 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from awesome_claude.core.agent.loop import AgentLoop
 from awesome_claude.core.config import ServerConfig, load_server_config
 from awesome_claude.core.llm.client import LLMClient
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import create_dispatcher
 from awesome_claude.core.server.tcp import TCPServer
 from awesome_claude.core.task.manager import TaskManager
+from awesome_claude.core.tools.builtin import create_time_tool
+from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.shared.logging.app_logger import get_app_logger, setup_app_logging
 from awesome_claude.shared.logging.task_tracker import get_task_tracker
 
@@ -19,7 +22,10 @@ type SendNotification = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 def build_context_factory(
-    task_manager: TaskManager, llm_client: LLMClient, config: ServerConfig
+    task_manager: TaskManager,
+    llm_client: LLMClient,
+    config: ServerConfig,
+    agent_loop: AgentLoop,
 ) -> Callable[[SendNotification], HandlerContext]:
     """构造会话上下文工厂。
 
@@ -27,6 +33,7 @@ def build_context_factory(
         task_manager: 任务管理器。
         llm_client: LLM 客户端。
         config: 服务端配置。
+        agent_loop: Agent 循环编排器。
 
     Returns:
         接收 send_notification 并返回 HandlerContext 的工厂函数。
@@ -38,6 +45,7 @@ def build_context_factory(
             llm_client=llm_client,
             send_notification=send_notification,
             config=config,
+            agent_loop=agent_loop,
         )
 
     return factory
@@ -61,8 +69,13 @@ async def run_server(config: ServerConfig | None = None) -> None:
         max_tokens=config.max_tokens,
         base_url=config.base_url,
     )
+    tool_registry = ToolRegistry()
+    tool_registry.register(create_time_tool())
+    agent_loop = AgentLoop(llm_client, tool_registry)
     dispatcher = create_dispatcher()
-    context_factory = build_context_factory(task_manager, llm_client, config)
+    context_factory = build_context_factory(
+        task_manager, llm_client, config, agent_loop
+    )
     server = TCPServer(config.host, config.port, dispatcher, context_factory)
 
     await server.start()

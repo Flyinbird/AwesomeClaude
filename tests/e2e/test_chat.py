@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from awesome_claude.client.transport.connection import ClientConnection
+from awesome_claude.core.agent.loop import AgentLoop
 from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent
 from awesome_claude.core.llm.exceptions import LLMAuthError
@@ -14,6 +15,7 @@ from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import create_dispatcher
 from awesome_claude.core.server.tcp import TCPServer
 from awesome_claude.core.task.manager import TaskManager
+from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.errors import LLM_AUTH_ERROR
 from awesome_claude.protocol.methods import (
     METHOD_CHAT,
@@ -66,6 +68,7 @@ async def _build_server(tmp_path: Path, llm: Any) -> tuple[TCPServer, Path]:
             llm_client=llm,
             send_notification=send_notification,
             config=config,
+            agent_loop=AgentLoop(llm, ToolRegistry()),
         )
 
     server = TCPServer(config.host, config.port, dispatcher, context_factory)
@@ -111,6 +114,10 @@ async def test_chat_full_flow(tmp_path: Path) -> None:
             stop_reason="end_turn",
             full_text="你好，世界",
             usage=TokenUsage(input_tokens=5, output_tokens=8),
+            message={
+                "role": "assistant",
+                "content": [{"type": "text", "text": "你好，世界"}],
+            },
         ),
     ]
     server, _ = await _build_server(tmp_path, FakeLLM(events))
@@ -151,6 +158,10 @@ async def test_task_logs_full_lifecycle(tmp_path: Path) -> None:
             stop_reason="end_turn",
             full_text="hi",
             usage=TokenUsage(input_tokens=3, output_tokens=1),
+            message={
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}],
+            },
         ),
     ]
     server, tasks_dir = await _build_server(tmp_path, FakeLLM(events))
@@ -173,6 +184,7 @@ async def test_task_logs_full_lifecycle(tmp_path: Path) -> None:
     assert stages == [
         "task_created",
         "context_built",
+        "step_started",
         "llm_request_sent",
         "llm_streaming",
         "llm_response_done",

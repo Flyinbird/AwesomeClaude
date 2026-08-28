@@ -29,6 +29,8 @@ class TaskTracker:
         stage: TaskStage,
         data: dict[str, Any],
         start_time: float,
+        *,
+        step_index: int | None = None,
     ) -> None:
         """记录一个任务阶段事件。
 
@@ -37,6 +39,7 @@ class TaskTracker:
             stage: 任务阶段。
             data: 附加上下文数据。
             start_time: 阶段开始时间（秒级单调时钟，与 time.monotonic 一致）。
+            step_index: 所属 step 序号（多轮 agent 循环时区分轮次，可选）。
         """
         now = time.monotonic()
         event = TaskEvent(
@@ -45,6 +48,7 @@ class TaskTracker:
             timestamp=datetime.now(UTC).isoformat(),
             duration_ms=(now - start_time) * 1000.0,
             data=data,
+            step_index=step_index,
         )
         date_dir = datetime.now(UTC).strftime("%Y-%m-%d")
         path = self._log_dir / date_dir / f"{task_id}.jsonl"

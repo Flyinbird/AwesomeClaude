@@ -3,11 +3,13 @@
 import time
 from typing import Any
 
+from awesome_claude.core.agent.loop import AgentLoop
 from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.handlers.chat import handle_chat
 from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent
 from awesome_claude.core.llm.exceptions import LLMAuthError, LLMTimeoutError
 from awesome_claude.core.router.context import HandlerContext
+from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.errors import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
@@ -23,9 +25,9 @@ class FakeTaskManager:
 
     def __init__(self) -> None:
         self.created: list[tuple[str, str, str]] = []
-        self.stages: list[tuple[str, TaskStage, dict]] = []
+        self.stages: list[tuple[str, TaskStage, dict, int | None]] = []
         self.completed: list[tuple[str, dict]] = []
-        self.failed: list[tuple[str, TaskStage, str, str]] = []
+        self.failed: list[tuple[str, TaskStage, str, str, int | None]] = []
         self._counter = 0
 
     async def create_task(self, user_input: str, client_addr: str) -> tuple[str, float]:
@@ -35,9 +37,15 @@ class FakeTaskManager:
         return task_id, time.monotonic()
 
     async def record_stage(
-        self, task_id: str, start_time: float, stage: TaskStage, data: dict
+        self,
+        task_id: str,
+        start_time: float,
+        stage: TaskStage,
+        data: dict,
+        *,
+        step_index: int | None = None,
     ) -> None:
-        self.stages.append((task_id, stage, data))
+        self.stages.append((task_id, stage, data, step_index))
 
     async def complete_task(self, task_id: str, start_time: float, data: dict) -> None:
         self.completed.append((task_id, data))
@@ -48,8 +56,12 @@ class FakeTaskManager:
         start_time: float,
         error: Exception,
         failed_stage: TaskStage,
+        *,
+        step_index: int | None = None,
     ) -> None:
-        self.failed.append((task_id, failed_stage, type(error).__name__, str(error)))
+        self.failed.append(
+            (task_id, failed_stage, type(error).__name__, str(error), step_index)
+        )
 
 
 class FakeLLMClient:
@@ -87,6 +99,10 @@ def _stream_events() -> list[Any]:
             stop_reason="end_turn",
             full_text="hello world!",
             usage=TokenUsage(input_tokens=12, output_tokens=7),
+            message={
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hello world!"}],
+            },
         ),
     ]
 
@@ -101,6 +117,7 @@ def make_context(
         llm_client=llm,
         send_notification=recorder.send,
         config=ServerConfig(api_key="k", model="m"),
+        agent_loop=AgentLoop(llm, ToolRegistry()),
     )
     return context, recorder
 
@@ -129,10 +146,13 @@ class TestHandleChat:
         stage_list = [s[1] for s in tm.stages]
         assert stage_list == [
             TaskStage.CONTEXT_BUILT,
+            TaskStage.STEP_STARTED,
             TaskStage.LLM_REQUEST_SENT,
             TaskStage.LLM_STREAMING,
             TaskStage.LLM_RESPONSE_DONE,
         ]
+        step_indices = [s[3] for s in tm.stages if s[1] != TaskStage.CONTEXT_BUILT]
+        assert step_indices == [1, 1, 1, 1]
 
         assert len(recorder.sent) == 4
         assert all(method == NOTIFY_CHAT_STREAM for method, _ in recorder.sent)
