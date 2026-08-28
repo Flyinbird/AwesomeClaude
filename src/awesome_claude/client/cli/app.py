@@ -1,1 +1,142 @@
 """CLI 应用入口 - 交互循环主流程。"""
+
+import asyncio
+import json
+from typing import Any
+
+from awesome_claude.client.cli.commands import parse_command
+from awesome_claude.client.cli.renderer import StreamRenderer
+from awesome_claude.client.transport.connection import ClientConnection
+from awesome_claude.protocol.methods import (
+    METHOD_CHAT,
+    METHOD_ECHO,
+    METHOD_PING,
+    NOTIFY_CHAT_STREAM,
+)
+from awesome_claude.shared.logging.app_logger import get_app_logger
+
+HELP_TEXT = """可用命令:
+  /ping            健康检查
+  /echo <text>     回显测试
+  /stats           显示会话累计 token 用量
+  /quit, /exit     退出
+  /help            显示本帮助
+其他输入将作为 chat 消息发送（流式输出）。"""
+
+WELCOME_TEXT = "已连接。输入文本聊天，/help 查看命令，/quit 退出。"
+
+
+class CLIApp:
+    """CLI 应用。"""
+
+    def __init__(self, host: str, port: int) -> None:
+        """初始化应用。
+
+        Args:
+            host: core server 地址。
+            port: core server 端口。
+        """
+        self._host = host
+        self._port = port
+        self._connection: ClientConnection | None = None
+        self._renderer = StreamRenderer()
+        self._session_stats: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        self._logger = get_app_logger("client.cli")
+
+    async def run(self) -> None:
+        """主循环：连接 → 注册流式通知 → REPL。"""
+        conn = ClientConnection(self._host, self._port)
+        self._connection = conn
+        try:
+            await conn.connect()
+        except (OSError, ConnectionError) as exc:
+            print(f"无法连接到 core server {self._host}:{self._port}: {exc}")
+            return
+        conn.on_notification(NOTIFY_CHAT_STREAM, self._handle_stream_notification)
+        print(WELCOME_TEXT)
+        try:
+            while True:
+                try:
+                    line = await asyncio.to_thread(input, "> ")
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+                if not await self._process_line(line, conn):
+                    break
+        finally:
+            await conn.disconnect()
+
+    async def _handle_stream_notification(self, params: dict[str, Any]) -> None:
+        """处理 chat.stream 通知并渲染流式文本。"""
+        if params.get("is_final"):
+            self._renderer.render_done()
+        else:
+            self._renderer.render_chunk(str(params.get("text", "")))
+
+    async def _process_line(self, line: str, conn: ClientConnection) -> bool:
+        """处理一行输入；返回 False 表示退出。"""
+        parsed = parse_command(line)
+        if parsed is None:
+            return await self._send_chat(line.strip(), conn)
+        command, params = parsed
+        try:
+            if command == "quit":
+                return False
+            if command == "help":
+                print(HELP_TEXT)
+                return True
+            if command == "stats":
+                self._render_session_stats()
+                return True
+            if command == "unknown":
+                print(f"未知命令: {params.get('command')}（输入 /help 查看帮助）")
+                return True
+            if command == "error":
+                print(params.get("message"))
+                return True
+            if command == "ping":
+                self._render_result(await conn.send_request(METHOD_PING))
+                return True
+            if command == "echo":
+                self._render_result(await conn.send_request(METHOD_ECHO, params))
+                return True
+            return True
+        except ConnectionError as exc:
+            print(f"连接已断开: {exc}")
+            return False
+
+    async def _send_chat(self, message: str, conn: ClientConnection) -> bool:
+        """发送 chat 请求；响应到达时已渲染完流式文本，随后展示摘要。"""
+        if not message:
+            return True
+        try:
+            resp = await conn.send_request(METHOD_CHAT, {"message": message})
+        except ConnectionError as exc:
+            print(f"连接已断开: {exc}")
+            return False
+        if "error" in resp:
+            self._renderer.render_error(resp["error"])
+        else:
+            self._renderer.render_summary(resp["result"])
+            self._accumulate_stats(resp["result"])
+        return True
+
+    def _render_result(self, resp: dict[str, Any]) -> None:
+        """渲染普通 request-response 结果。"""
+        if "error" in resp:
+            self._renderer.render_error(resp["error"])
+        else:
+            print(json.dumps(resp["result"], ensure_ascii=False))
+
+    def _accumulate_stats(self, result: dict[str, Any]) -> None:
+        """累加会话 token 统计。"""
+        usage = result.get("usage", {})
+        self._session_stats["input_tokens"] += int(usage.get("input_tokens", 0))
+        self._session_stats["output_tokens"] += int(usage.get("output_tokens", 0))
+
+    def _render_session_stats(self) -> None:
+        """显示会话累计 token 用量。"""
+        print(
+            f"📊 会话累计 tokens: {self._session_stats['input_tokens']} in / "
+            f"{self._session_stats['output_tokens']} out"
+        )

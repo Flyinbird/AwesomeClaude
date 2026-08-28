@@ -56,7 +56,10 @@ async def run_server(config: ServerConfig | None = None) -> None:
     task_tracker = get_task_tracker()
     task_manager = TaskManager(task_tracker)
     llm_client = LLMClient(
-        api_key=config.api_key, model=config.model, max_tokens=config.max_tokens
+        api_key=config.api_key,
+        model=config.model,
+        max_tokens=config.max_tokens,
+        base_url=config.base_url,
     )
     dispatcher = create_dispatcher()
     context_factory = build_context_factory(task_manager, llm_client, config)

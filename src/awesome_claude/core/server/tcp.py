@@ -51,7 +51,9 @@ class TCPServer:
         sock = self._server.sockets[0]
         addr = sock.getsockname()
         self._bound_addr = (str(addr[0]), int(addr[1]))
-        self._logger.info("listening", host=self._bound_addr[0], port=self._bound_addr[1])
+        self._logger.info(
+            "listening", host=self._bound_addr[0], port=self._bound_addr[1]
+        )
 
     def _spawn_client_handler(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

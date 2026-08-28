@@ -14,6 +14,7 @@ class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 9527
     model: str = "claude-sonnet-4-20250514"
+    base_url: str | None = None
     max_tokens: int = 4096
     log_level: str = "INFO"
     log_dir: str = "logs"
@@ -29,8 +30,9 @@ def load_server_config() -> ServerConfig:
 
     支持的环境变量：
         ANTHROPIC_API_KEY（必需）、AWESOME_CLAUDE_HOST、AWESOME_CLAUDE_PORT、
-        AWESOME_CLAUDE_MODEL、AWESOME_CLAUDE_MAX_TOKENS、AWESOME_CLAUDE_LOG_LEVEL、
-        AWESOME_CLAUDE_LOG_DIR。
+        AWESOME_CLAUDE_MODEL、AWESOME_CLAUDE_BASE_URL（可选，如 DeepSeek 的
+        https://api.deepseek.com/anthropic）、AWESOME_CLAUDE_MAX_TOKENS、
+        AWESOME_CLAUDE_LOG_LEVEL、AWESOME_CLAUDE_LOG_DIR。
 
     Returns:
         服务端配置。
@@ -49,6 +51,7 @@ def load_server_config() -> ServerConfig:
         host=os.getenv("AWESOME_CLAUDE_HOST", "127.0.0.1"),
         port=_env_int("AWESOME_CLAUDE_PORT", 9527),
         model=os.getenv("AWESOME_CLAUDE_MODEL", "claude-sonnet-4-20250514"),
+        base_url=os.getenv("AWESOME_CLAUDE_BASE_URL") or None,
         max_tokens=_env_int("AWESOME_CLAUDE_MAX_TOKENS", 4096),
         log_level=os.getenv("AWESOME_CLAUDE_LOG_LEVEL", "INFO"),
         log_dir=os.getenv("AWESOME_CLAUDE_LOG_DIR", "logs"),

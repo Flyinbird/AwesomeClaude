@@ -36,9 +36,9 @@ class TaskTracker:
             task_id: 任务 ID。
             stage: 任务阶段。
             data: 附加上下文数据。
-            start_time: 阶段开始时间（秒级 epoch 时间戳）。
+            start_time: 阶段开始时间（秒级单调时钟，与 time.monotonic 一致）。
         """
-        now = time.time()
+        now = time.monotonic()
         event = TaskEvent(
             task_id=task_id,
             stage=stage,

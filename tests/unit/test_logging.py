@@ -69,9 +69,14 @@ class TestTaskTracker:
     async def test_write_jsonl(self, tmp_path: Path) -> None:
         tracker = TaskTracker(str(tmp_path))
         await tracker.log_event(
-            "task-1", TaskStage.TASK_CREATED, {"k": "v"}, start_time=time.time() - 0.1
+            "task-1",
+            TaskStage.TASK_CREATED,
+            {"k": "v"},
+            start_time=time.monotonic() - 0.1,
         )
-        await tracker.log_event("task-1", TaskStage.TASK_COMPLETED, {}, time.time())
+        await tracker.log_event(
+            "task-1", TaskStage.TASK_COMPLETED, {}, time.monotonic()
+        )
 
         date_dir = datetime.now(UTC).strftime("%Y-%m-%d")
         path = tmp_path / date_dir / "task-1.jsonl"
@@ -91,15 +96,15 @@ class TestTaskTracker:
 
     async def test_each_task_own_file(self, tmp_path: Path) -> None:
         tracker = TaskTracker(str(tmp_path))
-        await tracker.log_event("task-1", TaskStage.TASK_CREATED, {}, time.time())
-        await tracker.log_event("task-2", TaskStage.TASK_CREATED, {}, time.time())
+        await tracker.log_event("task-1", TaskStage.TASK_CREATED, {}, time.monotonic())
+        await tracker.log_event("task-2", TaskStage.TASK_CREATED, {}, time.monotonic())
         date_dir = datetime.now(UTC).strftime("%Y-%m-%d")
         assert (tmp_path / date_dir / "task-1.jsonl").exists()
         assert (tmp_path / date_dir / "task-2.jsonl").exists()
 
     async def test_concurrent_writes_same_file(self, tmp_path: Path) -> None:
         tracker = TaskTracker(str(tmp_path))
-        start = time.time()
+        start = time.monotonic()
         await asyncio.gather(
             *(
                 tracker.log_event("task-x", TaskStage.LLM_STREAMING, {"i": i}, start)

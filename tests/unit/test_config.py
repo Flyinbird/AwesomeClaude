@@ -12,6 +12,7 @@ _ENV_KEYS = [
     "AWESOME_CLAUDE_MAX_TOKENS",
     "AWESOME_CLAUDE_LOG_LEVEL",
     "AWESOME_CLAUDE_LOG_DIR",
+    "AWESOME_CLAUDE_BASE_URL",
 ]
 
 
@@ -50,9 +51,20 @@ class TestLoadServerConfig:
         assert config.host == "127.0.0.1"
         assert config.port == 9527
         assert config.model == "claude-sonnet-4-20250514"
+        assert config.base_url is None
         assert config.max_tokens == 4096
         assert config.log_level == "INFO"
         assert config.log_dir == "logs"
+
+    def test_base_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv(
+            "AWESOME_CLAUDE_BASE_URL", "https://api.deepseek.com/anthropic"
+        )
+        monkeypatch.setenv("AWESOME_CLAUDE_MODEL", "deepseek-chat")
+        config = load_server_config()
+        assert config.base_url == "https://api.deepseek.com/anthropic"
+        assert config.model == "deepseek-chat"
 
     def test_missing_api_key_raises(self) -> None:
         with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
