@@ -5,8 +5,6 @@ from typing import Any
 
 import pytest
 
-from awesome_claude.core.config import ServerConfig
-from awesome_claude.core.server import CoreServer
 from awesome_claude.protocol.jsonrpc import (
     build_notification,
     build_request,
@@ -55,8 +53,11 @@ class RpcTestClient:
 
 
 @pytest.fixture
-async def server() -> CoreServer:
+async def server() -> Any:
     """启动一个使用随机端口（port=0）的 CoreServer。"""
+    from awesome_claude.core.config import ServerConfig
+    from awesome_claude.core.server import CoreServer
+
     srv = CoreServer(ServerConfig(host="127.0.0.1", port=0))
     await srv.start()
     yield srv
@@ -64,7 +65,7 @@ async def server() -> CoreServer:
 
 
 @pytest.fixture
-async def client(server: CoreServer) -> RpcTestClient:
+async def client(server: Any) -> RpcTestClient:
     """连接已启动 server 的测试客户端。"""
     c = RpcTestClient(*server.bound_addr)
     await c.connect()
