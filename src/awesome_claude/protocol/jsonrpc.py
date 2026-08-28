@@ -4,15 +4,41 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from awesome_claude.protocol.errors import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    INVALID_REQUEST,
+    METHOD_NOT_FOUND,
+    PARSE_ERROR,
+)
+
+__all__ = [
+    "INTERNAL_ERROR",
+    "INVALID_PARAMS",
+    "INVALID_REQUEST",
+    "JSONRPC_VERSION",
+    "METHOD_NOT_FOUND",
+    "PARSE_ERROR",
+    "JsonRpcDecodeError",
+    "JsonRpcError",
+    "JsonRpcErrorDetail",
+    "JsonRpcId",
+    "JsonRpcProtocolError",
+    "JsonRpcRequest",
+    "JsonRpcResponse",
+    "JsonRpcValidationError",
+    "build_error",
+    "build_notification",
+    "build_request",
+    "build_response",
+    "decode_message",
+    "encode_message",
+    "parse_message",
+]
+
 type JsonRpcId = str | int
 
 JSONRPC_VERSION: str = "2.0"
-
-PARSE_ERROR: int = -32700
-INVALID_REQUEST: int = -32600
-METHOD_NOT_FOUND: int = -32601
-INVALID_PARAMS: int = -32602
-INTERNAL_ERROR: int = -32603
 
 
 class JsonRpcProtocolError(Exception):

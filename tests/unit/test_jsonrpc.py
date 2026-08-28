@@ -4,6 +4,12 @@ from typing import Any
 
 import pytest
 
+from awesome_claude.protocol.errors import (
+    LLM_AUTH_ERROR,
+    LLM_ERROR,
+    LLM_TIMEOUT_ERROR,
+    build_error_response,
+)
 from awesome_claude.protocol.jsonrpc import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
@@ -25,6 +31,7 @@ from awesome_claude.protocol.jsonrpc import (
     encode_message,
     parse_message,
 )
+from awesome_claude.protocol.methods import NOTIFY_CHAT_STREAM
 
 
 class TestBuild:
@@ -88,6 +95,21 @@ class TestBuild:
     def test_build_notification_no_params(self) -> None:
         assert build_notification("ping") == {"jsonrpc": "2.0", "method": "ping"}
 
+    def test_build_notification_with_dict_params_has_no_id(self) -> None:
+        params = {
+            "task_id": "t1",
+            "chunk_index": 0,
+            "text": "hi",
+            "is_final": False,
+        }
+        msg = build_notification(NOTIFY_CHAT_STREAM, params)
+        assert msg == {
+            "jsonrpc": "2.0",
+            "method": NOTIFY_CHAT_STREAM,
+            "params": params,
+        }
+        assert "id" not in msg
+
 
 class TestParseMessage:
     """消息自动类型识别测试。"""
@@ -121,6 +143,32 @@ class TestParseMessage:
     def test_parse_notification_explicit_null_id(self) -> None:
         msg = parse_message({"jsonrpc": "2.0", "method": "notify", "id": None})
         assert msg.id is None
+
+    def test_parse_notification_versus_request(self) -> None:
+        stream_params = {
+            "task_id": "t1",
+            "chunk_index": 1,
+            "text": "hi",
+            "is_final": False,
+        }
+        notification = parse_message(
+            {"jsonrpc": "2.0", "method": NOTIFY_CHAT_STREAM, "params": stream_params}
+        )
+        assert isinstance(notification, JsonRpcRequest)
+        assert notification.method == NOTIFY_CHAT_STREAM
+        assert notification.params == stream_params
+        assert notification.id is None
+
+        request = parse_message(
+            {
+                "jsonrpc": "2.0",
+                "method": NOTIFY_CHAT_STREAM,
+                "params": stream_params,
+                "id": 7,
+            }
+        )
+        assert isinstance(request, JsonRpcRequest)
+        assert request.id == 7
 
     def test_parse_id_zero(self) -> None:
         msg = parse_message({"jsonrpc": "2.0", "method": "m", "id": 0})
@@ -367,6 +415,11 @@ class TestErrorCodes:
         assert INVALID_PARAMS == -32602
         assert INTERNAL_ERROR == -32603
 
+    def test_llm_codes(self) -> None:
+        assert LLM_ERROR == -32001
+        assert LLM_AUTH_ERROR == -32002
+        assert LLM_TIMEOUT_ERROR == -32003
+
     def test_decode_error_code(self) -> None:
         with pytest.raises(JsonRpcDecodeError) as exc_info:
             decode_message(b"oops")
@@ -384,3 +437,36 @@ class TestErrorCodes:
     def test_exception_is_catchable_as_base(self) -> None:
         with pytest.raises(JsonRpcProtocolError):
             decode_message(b"{bad}")
+
+
+class TestErrorResponse:
+    """build_error_response 构造测试。"""
+
+    def test_with_data_and_id(self) -> None:
+        resp = build_error_response(7, LLM_ERROR, "llm failed", data={"detail": "x"})
+        assert resp == {
+            "jsonrpc": "2.0",
+            "error": {"code": -32001, "message": "llm failed", "data": {"detail": "x"}},
+            "id": 7,
+        }
+
+    def test_without_data_omits_data_key(self) -> None:
+        resp = build_error_response(1, METHOD_NOT_FOUND, "not found")
+        assert resp == {
+            "jsonrpc": "2.0",
+            "error": {"code": -32601, "message": "not found"},
+            "id": 1,
+        }
+        assert "data" not in resp["error"]
+
+    def test_null_id(self) -> None:
+        resp = build_error_response(None, LLM_AUTH_ERROR, "auth failed")
+        assert resp["id"] is None
+        assert resp["error"]["code"] == LLM_AUTH_ERROR
+
+    def test_roundtrip_parse(self) -> None:
+        resp = build_error_response(9, LLM_TIMEOUT_ERROR, "timeout")
+        msg = parse_message(resp)
+        assert isinstance(msg, JsonRpcError)
+        assert msg.error.code == LLM_TIMEOUT_ERROR
+        assert msg.id == 9
