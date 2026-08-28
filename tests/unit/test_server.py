@@ -1,17 +1,20 @@
-"""Core 服务端测试：启动 → 连接 → 收发消息 → 验证。"""
+"""Core 服务端测试（新架构）：Dispatcher 单元测试 + TCPServer 集成测试。"""
 
 import asyncio
 from typing import Any
 
 import pytest
 
-from awesome_claude.core.handler import handle_echo
-from awesome_claude.core.router import MethodRouter
-from awesome_claude.core.server import CoreServer
-from awesome_claude.protocol.jsonrpc import (
+from awesome_claude.core.config import ServerConfig
+from awesome_claude.core.handlers.echo import handle_echo
+from awesome_claude.core.router.context import HandlerContext
+from awesome_claude.core.router.dispatcher import Dispatcher, create_dispatcher
+from awesome_claude.protocol.errors import (
     INTERNAL_ERROR,
     INVALID_REQUEST,
     METHOD_NOT_FOUND,
+)
+from awesome_claude.protocol.jsonrpc import (
     JsonRpcError,
     JsonRpcResponse,
     decode_message,
@@ -21,78 +24,57 @@ from awesome_claude.protocol.methods import METHOD_ECHO, METHOD_PING, METHOD_SHU
 from tests.conftest import RpcTestClient
 
 
-class TestRouter:
-    """MethodRouter 单元测试。"""
+def make_context() -> HandlerContext:
+    """构造测试用 HandlerContext。"""
+    from unittest.mock import MagicMock
+
+    return HandlerContext(
+        task_manager=MagicMock(),
+        llm_client=MagicMock(),
+        send_notification=MagicMock(),
+        config=ServerConfig(api_key="k", host="127.0.0.1", port=0),
+    )
+
+
+class TestDispatcher:
+    """Dispatcher 单元测试。"""
+
+    async def test_register_and_dispatch(self) -> None:
+        dispatcher = Dispatcher()
+        dispatcher.register(METHOD_ECHO, handle_echo)
+        result = await dispatcher.dispatch(
+            METHOD_ECHO, {"message": "hi"}, make_context()
+        )
+        assert result == {"echo": "hi"}
 
     async def test_register_overwrite(self) -> None:
-        router = MethodRouter()
+        dispatcher = Dispatcher()
 
-        async def first(params: Any) -> str:
-            return "first"
+        async def first(params: dict[str, Any] | None, context: HandlerContext) -> dict:
+            return {"v": "first"}
 
-        async def second(params: Any) -> str:
-            return "second"
+        async def second(
+            params: dict[str, Any] | None, context: HandlerContext
+        ) -> dict:
+            return {"v": "second"}
 
-        router.register("m", first)
-        router.register("m", second)
-        req = parse_message({"jsonrpc": "2.0", "method": "m", "id": 1})
-        resp = await router.route(req)
-        assert resp["result"] == "second"
+        dispatcher.register("m", first)
+        dispatcher.register("m", second)
+        assert await dispatcher.dispatch("m", None, make_context()) == {"v": "second"}
 
-    async def test_unregister(self) -> None:
-        router = MethodRouter()
+    async def test_unknown_method_returns_method_not_found(self) -> None:
+        dispatcher = Dispatcher()
+        result = await dispatcher.dispatch("nope", None, make_context())
+        assert result["error"]["code"] == METHOD_NOT_FOUND
 
-        async def handler(params: Any) -> str:
-            return "ok"
-
-        router.register("m", handler)
-        router.unregister("m")
-        req = parse_message({"jsonrpc": "2.0", "method": "m", "id": 1})
-        resp = await router.route(req)
-        assert resp["error"]["code"] == METHOD_NOT_FOUND
-
-    async def test_route_unknown_method(self) -> None:
-        router = MethodRouter()
-        req = parse_message({"jsonrpc": "2.0", "method": "nope", "id": 1})
-        resp = await router.route(req)
-        assert resp["error"]["code"] == METHOD_NOT_FOUND
-        assert resp["id"] == 1
-
-    async def test_route_echo(self) -> None:
-        router = MethodRouter()
-        router.register(METHOD_ECHO, handle_echo)
-        req = parse_message(
-            {
-                "jsonrpc": "2.0",
-                "method": METHOD_ECHO,
-                "params": {"message": "hi"},
-                "id": 1,
-            }
-        )
-        resp = await router.route(req)
-        assert resp["result"] == {"echo": "hi"}
-
-    async def test_route_handler_exception_maps_to_internal_error(self) -> None:
-        router = MethodRouter()
-
-        async def boom(params: Any) -> None:
-            raise RuntimeError("boom")
-
-        router.register("boom", boom)
-        req = parse_message({"jsonrpc": "2.0", "method": "boom", "id": 1})
-        resp = await router.route(req)
-        assert resp["error"]["code"] == INTERNAL_ERROR
-
-    async def test_route_notification_returns_error_not_sent_by_server(self) -> None:
-        router = MethodRouter()
-        req = parse_message({"jsonrpc": "2.0", "method": "nope"})
-        resp = await router.route(req)
-        assert resp["error"]["code"] == METHOD_NOT_FOUND
-        assert resp["id"] is None
+    async def test_create_dispatcher_registers_defaults(self) -> None:
+        dispatcher = create_dispatcher()
+        for method in (METHOD_PING, METHOD_ECHO, METHOD_SHUTDOWN, "chat"):
+            assert method in dispatcher._handlers
 
 
 class TestServer:
-    """CoreServer 集成测试。"""
+    """TCPServer 集成测试（通过真实 TCP 连接）。"""
 
     async def test_ping(self, client: RpcTestClient) -> None:
         resp = await client.call(METHOD_PING, req_id=1)
@@ -117,7 +99,7 @@ class TestServer:
         assert isinstance(msg, JsonRpcError)
         assert msg.error.code == INTERNAL_ERROR
 
-    async def test_method_not_found(self, client: RpcTestClient) -> None:
+    async def test_method_not_found_echoes_id(self, client: RpcTestClient) -> None:
         resp = await client.call("unknown_method", req_id=42)
         msg = parse_message(resp)
         assert isinstance(msg, JsonRpcError)
@@ -145,7 +127,7 @@ class TestServer:
         assert isinstance(msg, JsonRpcResponse)
         assert msg.id == 5
 
-    async def test_multiple_clients(self, server: CoreServer) -> None:
+    async def test_multiple_clients(self, server: Any) -> None:
         clients = [RpcTestClient(*server.bound_addr) for _ in range(3)]
         await asyncio.gather(*(c.connect() for c in clients))
         results = await asyncio.gather(
@@ -158,7 +140,7 @@ class TestServer:
             assert msg.result["status"] == "ok"
         await asyncio.gather(*(c.close() for c in clients))
 
-    async def test_shutdown_stops_server(self, server: CoreServer) -> None:
+    async def test_shutdown_stops_server(self, server: Any) -> None:
         c = RpcTestClient(*server.bound_addr)
         await c.connect()
         await c.notify(METHOD_SHUTDOWN)
@@ -170,7 +152,7 @@ class TestServer:
         assert await c.reader.readline() == b""
         await c.close()
 
-    async def test_reconnect_after_stop_fails(self, server: CoreServer) -> None:
+    async def test_reconnect_after_stop_fails(self, server: Any) -> None:
         await server.stop()
         with pytest.raises(OSError):
             _, writer = await asyncio.open_connection(*server.bound_addr)
