@@ -13,7 +13,6 @@ from awesome_claude.client.cli import (
     process_line,
 )
 from awesome_claude.client.connection import ClientConnection
-from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.server import CoreServer
 from awesome_claude.protocol.jsonrpc import (
     METHOD_NOT_FOUND,
@@ -36,14 +35,6 @@ class FakeConnection:
 
     async def send_notification(self, method: str, params: Any = None) -> None:
         self.calls.append(("notification", method, params))
-
-
-@pytest.fixture
-async def server():
-    srv = CoreServer(ServerConfig(host="127.0.0.1", port=0))
-    await srv.start()
-    yield srv
-    await srv.stop()
 
 
 class TestParseArgs:

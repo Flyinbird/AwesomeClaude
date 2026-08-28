@@ -20,3 +20,9 @@ wheels/
 
 # macOS
 .DS_Store
+
+# Logs
+logs/
+
+# Environment
+.env
