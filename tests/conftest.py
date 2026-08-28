@@ -58,7 +58,7 @@ async def server() -> Any:
     from awesome_claude.core.config import ServerConfig
     from awesome_claude.core.server import CoreServer
 
-    srv = CoreServer(ServerConfig(host="127.0.0.1", port=0))
+    srv = CoreServer(ServerConfig(api_key="test-key", host="127.0.0.1", port=0))
     await srv.start()
     yield srv
     await srv.stop()
