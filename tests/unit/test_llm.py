@@ -1,4 +1,4 @@
-"""core/llm LLMClient 测试（mock Anthropic SDK，不真实调用 API）。"""
+"""core/llm AnthropicClient 测试（mock Anthropic SDK，不真实调用 API）。"""
 
 from types import SimpleNamespace
 from typing import Any, Self
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import anthropic
 import pytest
 
-from awesome_claude.core.llm.client import LLMClient
+from awesome_claude.core.llm.anthropic_client import AnthropicClient
 from awesome_claude.core.llm.events import (
     DoneEvent,
     TextDeltaEvent,
@@ -163,11 +163,11 @@ class FakeAnthropicClient:
 
 def make_client(
     events: list[Any] | None = None, exc: Exception | None = None
-) -> tuple[LLMClient, FakeAnthropicClient]:
-    """创建使用 fake 底层客户端的 LLMClient。"""
+) -> tuple[AnthropicClient, FakeAnthropicClient]:
+    """创建使用 fake 底层客户端的 AnthropicClient。"""
     fake = FakeAnthropicClient(events or [], exc)
     with patch("anthropic.AsyncAnthropic", return_value=fake):
-        client = LLMClient(api_key="test-key", model="test-model", max_tokens=64)
+        client = AnthropicClient(api_key="test-key", model="test-model", max_tokens=64)
     return client, fake
 
 

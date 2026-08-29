@@ -3,8 +3,9 @@
 ## 项目概述
 AwesomeClaude 是一个类似 Claude Code 的 AI Agent 框架，采用 Client-Server 架构。
 `core/`（常驻守护进程）通过 TCP Socket + JSON-RPC 2.0 协议接收 `client/`（CLI）命令并执行响应。
-当前已完成 Phase 2：基于 Anthropic SDK 的流式 LLM 对话、任务生命周期追踪、结构化日志。
-未来将扩展 Tool Use、Memory Compression、Planning 等能力。
+当前已完成 Phase 2（基于 Anthropic SDK 的流式 LLM 对话、任务生命周期追踪、结构化日志），
+并落地了 Agent Loop 骨架（Tool Use 多轮编排）、任务模型 step 化、多客户端会话共享（Session）。
+未来将扩展完整工具集、Memory Compression、Planning 等能力。
 
 ## 技术栈
 - 语言：Python 3.12+
@@ -30,21 +31,33 @@ awesome-claude/
 │       ├── core/           # 守护进程 (Server)
 │       │   ├── app.py          # 应用装配与启动（run_server）
 │       │   ├── config.py       # ServerConfig + load_server_config()
+│       │   ├── agent/          # Agent 运行时
+│       │   │   ├── loop.py         # AgentLoop：多轮 LLM + 工具编排
+│       │   │   ├── events.py       # StepStarted/StepFinished/ToolStarted/ToolFinished
+│       │   │   └── result.py       # AgentResult
+│       │   ├── tools/         # 工具抽象
+│       │   │   ├── base.py         # Tool / ToolResult
+│       │   │   ├── registry.py     # ToolRegistry（注册/执行/转 Anthropic schema）
+│       │   │   └── builtin/        # 内置工具（time.py: get_time）
+│       │   ├── session/       # 会话管理（多客户端共享）
+│       │   │   ├── registry.py     # ConnectionSink / Session / SessionRegistry
+│       │   │   └── channel.py      # SessionChannel（每连接门面）
 │       │   ├── server/
 │       │   │   ├── tcp.py      # TCPServer：TCP 监听、多客户端、优雅停止
-│       │   │   └── session.py  # ClientSession：逐行读取、解析、分发、回写、注入 send_notification
+│       │   │   └── session.py  # ClientSession：逐行读取、解析、分发、回写、注入 SessionChannel
 │       │   ├── router/
 │       │   │   ├── dispatcher.py  # Dispatcher + create_dispatcher()
 │       │   │   └── context.py     # HandlerContext
 │       │   ├── handlers/
 │       │   │   ├── base.py        # HandlerFunc 类型 + register_handler 装饰器
-│       │   │   ├── ping.py / echo.py / shutdown.py / chat.py
+│       │   │   ├── ping.py / echo.py / shutdown.py / chat.py / session.py
 │       │   ├── llm/
-│       │   │   ├── client.py      # LLMClient（chat_stream 流式 / chat 非流式）
-│       │   │   ├── events.py      # TextDeltaEvent / DoneEvent / LLMStreamEvent
-│       │   │   └── exceptions.py  # LLMError 异常层级
+│       │   │   ├── base.py            # LLMProvider 协议（供应商无关接口）
+│       │   │   ├── anthropic_client.py # AnthropicClient（Anthropic SDK 实现）
+│       │   │   ├── events.py          # Text/Thinking/ToolUse/Done 事件 + LLMStreamEvent
+│       │   │   └── exceptions.py      # LLMError 异常层级
 │       │   └── task/
-│       │       ├── manager.py     # TaskManager（任务生命周期）
+│       │       ├── manager.py     # TaskManager（任务生命周期 + step 维度）
 │       │       └── stages.py      # re-export TaskStage
 │       ├── client/         # 客户端 (CLI)
 │       │   ├── cli/
@@ -77,13 +90,14 @@ awesome-claude/
     ├── architecture.md
     └── protocol.md
 ```
-
+**注意，项目结构并非一层不变，随着项目迭代，项目结构也需要迭代**
 ## 核心概念
-- **HandlerContext**：传给 handler 的运行时上下文，含 `task_manager`、`llm_client`、`send_notification`、`config`。由 session 每连接创建一次（注入绑定到该连接的 `send_notification`）。
+- **HandlerContext**：传给 handler 的运行时上下文，含 `task_manager`、`llm_client`、`sessions`（SessionChannel，多客户端会话广播）、`config`、`agent_loop`。由 ClientSession 每连接创建一次（注入绑定到该连接的 `SessionChannel`）。
 - **HandlerFunc**：`Callable[[dict | None, HandlerContext], Awaitable[dict]]`。handler 返回**结果 dict**；出错时返回含 `"error"` 键的错误响应 dict（`build_error_response`），session 负责补全 `id`。
-- **方法注册**：handler 用 `@register_handler(METHOD_X)` 装饰；`create_dispatcher()` 显式注册 ping/echo/shutdown/chat 四个方法。
-- **流式 chat**：chat handler 遍历 `llm_client.chat_stream()`，每个 `TextDeltaEvent` 经 `send_notification` 推送 `chat.stream` 通知（is_final=false），`DoneEvent` 推送终帧（is_final=true）并统计 token。
-- **任务生命周期**：`TaskManager.create_task()` 生成 8 位 UUID task_id（记录 `time.monotonic()` 起点）→ `record_stage` / `complete_task` / `fail_task`，由 `TaskTracker` 写入 JSONL。
+- **方法注册**：handler 用 `@register_handler(METHOD_X)` 装饰；`create_dispatcher()` 显式注册 ping/echo/shutdown/chat/session.attach/session.detach 六个方法。
+- **Agent Loop**：`AgentLoop` 编排多轮 LLM + 工具调用；chat handler 委托 `agent_loop.run()`，通过 `on_event`（LLM 流式事件）与 `on_step`（step/tool 结构事件）回调转为 `chat.stream` / `chat.tool_*` 通知并记录任务阶段。
+- **多客户端会话**：`SessionRegistry` 维护 `session_id → Session`（订阅连接集合 + 对话历史）。客户端经 `session.attach` 订阅，`SessionChannel.broadcast` 在已订阅时扇出到会话内所有连接，未订阅时单播（向后兼容）。
+- **任务生命周期**：`TaskManager.create_task()` 生成 8 位 UUID task_id（记录 `time.monotonic()` 起点）→ `record_stage` / `complete_task` / `fail_task`，由 `TaskTracker` 写入 JSONL。多轮 Agent Loop 下用 `step_index` 区分轮次。
 - **时间基准**：所有阶段 duration 计算必须用单调时钟 `time.monotonic()`（TaskTracker 内部同样使用），禁止混用 `time.time()`。
 
 ## 编码规范
@@ -141,7 +155,7 @@ uv run ruff format src/ tests/
 ## 阶段规划
 - ✅ Phase 1：最小骨架 — client → core → response 完整链路（ping / echo / shutdown）
 - ✅ Phase 2：集成 LLM — 流式对话、任务生命周期追踪、结构化日志
-- ⬜ Phase 3：Tool Use — 注册和执行工具（文件读写、命令执行）
+- 🔶 Phase 3：Tool Use — Agent Loop 骨架 + get_time 内置工具已落地，待完整工具集（文件读写、命令执行）
 - ⬜ Phase 4：Memory — 会话历史管理与压缩
 - ⬜ Phase 5：Planning — 多步任务规划与执行
 - ⬜ Phase 6：TUI/Web — 扩展客户端形态

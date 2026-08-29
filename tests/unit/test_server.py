@@ -9,6 +9,8 @@ from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.handlers.echo import handle_echo
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import Dispatcher, create_dispatcher
+from awesome_claude.core.session.channel import SessionChannel
+from awesome_claude.core.session.registry import ConnectionSink, SessionRegistry
 from awesome_claude.protocol.errors import (
     INTERNAL_ERROR,
     INVALID_REQUEST,
@@ -20,7 +22,13 @@ from awesome_claude.protocol.jsonrpc import (
     decode_message,
     parse_message,
 )
-from awesome_claude.protocol.methods import METHOD_ECHO, METHOD_PING, METHOD_SHUTDOWN
+from awesome_claude.protocol.methods import (
+    METHOD_ECHO,
+    METHOD_PING,
+    METHOD_SESSION_ATTACH,
+    METHOD_SESSION_DETACH,
+    METHOD_SHUTDOWN,
+)
 from tests.conftest import RpcTestClient
 
 
@@ -28,10 +36,11 @@ def make_context() -> HandlerContext:
     """构造测试用 HandlerContext。"""
     from unittest.mock import MagicMock
 
+    channel = SessionChannel(ConnectionSink(MagicMock()), SessionRegistry())
     return HandlerContext(
         task_manager=MagicMock(),
         llm_client=MagicMock(),
-        send_notification=MagicMock(),
+        sessions=channel,
         config=ServerConfig(api_key="k", host="127.0.0.1", port=0),
     )
 
@@ -69,7 +78,14 @@ class TestDispatcher:
 
     async def test_create_dispatcher_registers_defaults(self) -> None:
         dispatcher = create_dispatcher()
-        for method in (METHOD_PING, METHOD_ECHO, METHOD_SHUTDOWN, "chat"):
+        for method in (
+            METHOD_PING,
+            METHOD_ECHO,
+            METHOD_SHUTDOWN,
+            "chat",
+            METHOD_SESSION_ATTACH,
+            METHOD_SESSION_DETACH,
+        ):
             assert method in dispatcher._handlers
 
 

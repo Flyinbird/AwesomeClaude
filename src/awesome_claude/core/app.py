@@ -2,31 +2,31 @@
 
 import asyncio
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from awesome_claude.core.agent.loop import AgentLoop
 from awesome_claude.core.config import ServerConfig, load_server_config
-from awesome_claude.core.llm.client import LLMClient
+from awesome_claude.core.llm.anthropic_client import AnthropicClient
+from awesome_claude.core.llm.base import LLMProvider
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import create_dispatcher
 from awesome_claude.core.server.tcp import TCPServer
+from awesome_claude.core.session.channel import SessionChannel
+from awesome_claude.core.session.registry import SessionRegistry
 from awesome_claude.core.task.manager import TaskManager
 from awesome_claude.core.tools.builtin import create_time_tool
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.shared.logging.app_logger import get_app_logger, setup_app_logging
 from awesome_claude.shared.logging.task_tracker import get_task_tracker
 
-type SendNotification = Callable[[str, dict[str, Any]], Awaitable[None]]
-
 
 def build_context_factory(
     task_manager: TaskManager,
-    llm_client: LLMClient,
+    llm_client: LLMProvider,
     config: ServerConfig,
     agent_loop: AgentLoop,
-) -> Callable[[SendNotification], HandlerContext]:
+) -> Callable[[SessionChannel], HandlerContext]:
     """构造会话上下文工厂。
 
     Args:
@@ -36,14 +36,14 @@ def build_context_factory(
         agent_loop: Agent 循环编排器。
 
     Returns:
-        接收 send_notification 并返回 HandlerContext 的工厂函数。
+        接收 SessionChannel 并返回 HandlerContext 的工厂函数。
     """
 
-    def factory(send_notification: SendNotification) -> HandlerContext:
+    def factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(
             task_manager=task_manager,
             llm_client=llm_client,
-            send_notification=send_notification,
+            sessions=channel,
             config=config,
             agent_loop=agent_loop,
         )
@@ -63,7 +63,7 @@ async def run_server(config: ServerConfig | None = None) -> None:
 
     task_tracker = get_task_tracker()
     task_manager = TaskManager(task_tracker)
-    llm_client = LLMClient(
+    llm_client = AnthropicClient(
         api_key=config.api_key,
         model=config.model,
         max_tokens=config.max_tokens,
@@ -73,10 +73,13 @@ async def run_server(config: ServerConfig | None = None) -> None:
     tool_registry.register(create_time_tool())
     agent_loop = AgentLoop(llm_client, tool_registry)
     dispatcher = create_dispatcher()
+    session_registry = SessionRegistry()
     context_factory = build_context_factory(
         task_manager, llm_client, config, agent_loop
     )
-    server = TCPServer(config.host, config.port, dispatcher, context_factory)
+    server = TCPServer(
+        config.host, config.port, dispatcher, context_factory, session_registry
+    )
 
     await server.start()
     loop = asyncio.get_running_loop()

@@ -60,22 +60,27 @@ async def server(tmp_path: Any) -> Any:
     from awesome_claude.core.router.context import HandlerContext
     from awesome_claude.core.router.dispatcher import create_dispatcher
     from awesome_claude.core.server.tcp import TCPServer
+    from awesome_claude.core.session.channel import SessionChannel
+    from awesome_claude.core.session.registry import SessionRegistry
     from awesome_claude.core.task.manager import TaskManager
     from awesome_claude.shared.logging.task_tracker import TaskTracker
 
     tracker = TaskTracker(str(tmp_path / "tasks"))
     task_manager = TaskManager(tracker)
     config = ServerConfig(api_key="test-key", host="127.0.0.1", port=0)
+    registry = SessionRegistry()
 
-    def context_factory(send_notification: Any) -> HandlerContext:
+    def context_factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(
             task_manager=task_manager,
             llm_client=MagicMock(),
-            send_notification=send_notification,
+            sessions=channel,
             config=config,
         )
 
-    srv = TCPServer(config.host, config.port, create_dispatcher(), context_factory)
+    srv = TCPServer(
+        config.host, config.port, create_dispatcher(), context_factory, registry
+    )
     await srv.start()
     yield srv
     await srv.stop()

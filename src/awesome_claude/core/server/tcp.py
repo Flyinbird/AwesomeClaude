@@ -4,6 +4,7 @@ import asyncio
 
 from awesome_claude.core.router.dispatcher import Dispatcher
 from awesome_claude.core.server.session import ClientSession, ContextFactory
+from awesome_claude.core.session.registry import SessionRegistry
 from awesome_claude.shared.logging.app_logger import get_app_logger
 
 
@@ -16,6 +17,7 @@ class TCPServer:
         port: int,
         dispatcher: Dispatcher,
         context_factory: ContextFactory,
+        registry: SessionRegistry,
     ) -> None:
         """初始化服务器。
 
@@ -24,11 +26,13 @@ class TCPServer:
             port: 监听端口（0 表示由系统分配）。
             dispatcher: 请求分发器。
             context_factory: 会话上下文工厂。
+            registry: 会话注册表。
         """
         self._host = host
         self._port = port
         self._dispatcher = dispatcher
         self._context_factory = context_factory
+        self._registry = registry
         self._logger = get_app_logger("core.tcp")
         self._server: asyncio.AbstractServer | None = None
         self._stop_event = asyncio.Event()
@@ -74,6 +78,7 @@ class TCPServer:
                 writer,
                 self._dispatcher,
                 self._context_factory,
+                self._registry,
                 on_shutdown=self.request_shutdown,
             )
             await session.handle_connection()

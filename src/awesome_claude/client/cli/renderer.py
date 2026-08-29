@@ -52,3 +52,41 @@ class StreamRenderer:
         print(f"错误 {error.get('code')}: {error.get('message')}")
         if "data" in error:
             print(f"  data={error['data']}")
+
+    def render_tool_started(self, tool_name: str) -> None:
+        """渲染工具调用开始。
+
+        Args:
+            tool_name: 工具名。
+        """
+        print(f"🔧 调用工具 {tool_name} ...")
+
+    def render_tool_finished(self, tool_name: str, is_error: bool) -> None:
+        """渲染工具调用结束。
+
+        Args:
+            tool_name: 工具名。
+            is_error: 是否执行失败。
+        """
+        status = "失败" if is_error else "完成"
+        print(f"🔧 工具 {tool_name} {status}")
+
+    def render_user_message(self, message: str) -> None:
+        """渲染其他客户端的用户输入。
+
+        Args:
+            message: 用户输入。
+        """
+        print(f"👤 其他客户端: {message}")
+
+    def render_history(self, history: list[dict[str, Any]]) -> None:
+        """渲染会话历史回放。
+
+        Args:
+            history: 会话历史记录列表。
+        """
+        for turn in history:
+            role = turn.get("role")
+            content = turn.get("content")
+            prefix = "你" if role == "user" else "AI"
+            print(f"  {prefix}: {content}")

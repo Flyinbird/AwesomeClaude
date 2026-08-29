@@ -11,7 +11,7 @@ from awesome_claude.core.agent.events import (
     ToolStarted,
 )
 from awesome_claude.core.agent.result import AgentResult
-from awesome_claude.core.llm.client import LLMClient
+from awesome_claude.core.llm.base import LLMProvider
 from awesome_claude.core.llm.events import (
     DoneEvent,
     LLMStreamEvent,
@@ -39,7 +39,7 @@ class AgentLoop:
 
     def __init__(
         self,
-        llm_client: LLMClient,
+        llm_client: LLMProvider,
         tools: ToolRegistry,
         *,
         max_steps: int = 25,
@@ -47,7 +47,7 @@ class AgentLoop:
         """初始化 AgentLoop。
 
         Args:
-            llm_client: LLM 客户端。
+            llm_client: LLM 客户端（任一 LLMProvider 实现）。
             tools: 工具注册表。
             max_steps: 最大循环步数（每次 LLM 调用计一步）。
         """

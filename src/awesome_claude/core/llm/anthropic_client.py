@@ -1,4 +1,4 @@
-"""LLM Client - Anthropic SDK 封装，支持流式输出与工具调用。"""
+"""Anthropic LLM Provider - 基于 Anthropic SDK 的 LLMProvider 实现。"""
 
 import json
 import time
@@ -8,6 +8,7 @@ from typing import Any
 
 import anthropic
 
+from awesome_claude.core.llm.base import LLMProvider
 from awesome_claude.core.llm.events import (
     DoneEvent,
     InputJsonDeltaEvent,
@@ -27,7 +28,7 @@ from awesome_claude.core.llm.exceptions import (
 from awesome_claude.shared.types import ChatResponse, TokenUsage
 
 
-class LLMClient:
+class AnthropicClient(LLMProvider):
     """Anthropic 消息 API 客户端封装，支持流式与非流式调用。"""
 
     def __init__(
@@ -37,7 +38,7 @@ class LLMClient:
         max_tokens: int = 4096,
         base_url: str | None = None,
     ) -> None:
-        """初始化 LLM 客户端。
+        """初始化 Anthropic 客户端。
 
         Args:
             api_key: Anthropic API key。

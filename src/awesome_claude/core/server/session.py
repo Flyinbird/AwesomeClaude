@@ -1,11 +1,13 @@
 """会话管理 - 客户端连接会话状态跟踪。"""
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import Dispatcher
+from awesome_claude.core.session.channel import SessionChannel
+from awesome_claude.core.session.registry import ConnectionSink, SessionRegistry
 from awesome_claude.protocol.errors import INTERNAL_ERROR, build_error_response
 from awesome_claude.protocol.jsonrpc import (
     INVALID_REQUEST,
@@ -21,9 +23,7 @@ from awesome_claude.protocol.jsonrpc import (
 from awesome_claude.protocol.methods import METHOD_SHUTDOWN
 from awesome_claude.shared.logging.app_logger import get_app_logger
 
-type ContextFactory = Callable[
-    [Callable[[str, dict[str, Any]], Awaitable[None]]], HandlerContext
-]
+type ContextFactory = Callable[[SessionChannel], HandlerContext]
 
 
 class ClientSession:
@@ -35,6 +35,7 @@ class ClientSession:
         writer: asyncio.StreamWriter,
         dispatcher: Dispatcher,
         context_factory: ContextFactory,
+        registry: SessionRegistry,
         on_shutdown: Callable[[], None] | None = None,
     ) -> None:
         """初始化会话。
@@ -43,20 +44,24 @@ class ClientSession:
             reader: 连接读流。
             writer: 连接写流。
             dispatcher: 请求分发器。
-            context_factory: 为每个连接创建 HandlerContext 的工厂（注入 send_notification）。
+            context_factory: 为每个连接创建 HandlerContext 的工厂（注入 SessionChannel）。
+            registry: 会话注册表。
             on_shutdown: shutdown 通知触发时的回调（默认无）。
         """
         self._reader = reader
         self._writer = writer
         self._dispatcher = dispatcher
         self._context_factory = context_factory
+        self._registry = registry
         self._on_shutdown = on_shutdown
         self._addr = writer.get_extra_info("peername")
         self._logger = get_app_logger("core.session")
 
     async def handle_connection(self) -> None:
         """主循环：读取 JSON-RPC 消息并逐条处理。"""
-        context = self._context_factory(self.send_notification)
+        sink = ConnectionSink(self._send_notification)
+        channel = SessionChannel(sink, self._registry)
+        context = self._context_factory(channel)
         self._logger.info("client connected", addr=self._addr)
         try:
             while True:
@@ -73,6 +78,7 @@ class ClientSession:
         except Exception:
             self._logger.exception("session crashed", addr=self._addr)
         finally:
+            channel.detach()
             self._writer.close()
             try:
                 await self._writer.wait_closed()
@@ -120,7 +126,7 @@ class ClientSession:
             return False
         return True
 
-    async def send_notification(self, method: str, params: dict[str, Any]) -> None:
+    async def _send_notification(self, method: str, params: dict[str, Any]) -> None:
         """构造 JSON-RPC notification 并写入 writer。"""
         await self._send(build_notification(method, params))
 

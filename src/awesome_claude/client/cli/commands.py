@@ -29,6 +29,8 @@ def parse_command(line: str) -> tuple[str, dict[str, Any]] | None:
         return ("quit", {})
     if command == "/stats":
         return ("stats", {})
+    if command == "/session":
+        return ("session", {})
     if command == "/help":
         return ("help", {})
     return ("unknown", {"command": text})

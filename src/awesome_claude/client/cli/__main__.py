@@ -25,13 +25,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--port", type=int, default=9527, help="core server 端口（默认 9527）"
     )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="会话 ID（默认自动生成新会话；多客户端共享时需指定同一 ID）",
+    )
     return parser.parse_args(argv)
 
 
 def main() -> None:
     """命令行入口。"""
     args = parse_args()
-    asyncio.run(CLIApp(args.host, args.port).run())
+    asyncio.run(CLIApp(args.host, args.port, args.session).run())
 
 
 if __name__ == "__main__":

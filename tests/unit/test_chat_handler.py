@@ -9,6 +9,8 @@ from awesome_claude.core.handlers.chat import handle_chat
 from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent
 from awesome_claude.core.llm.exceptions import LLMAuthError, LLMTimeoutError
 from awesome_claude.core.router.context import HandlerContext
+from awesome_claude.core.session.channel import SessionChannel
+from awesome_claude.core.session.registry import ConnectionSink, SessionRegistry
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.errors import (
     INTERNAL_ERROR,
@@ -81,7 +83,7 @@ class FakeLLMClient:
 
 
 class NotificationRecorder:
-    """记录 send_notification 调用的替身。"""
+    """记录广播通知调用的替身发送端点。"""
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, dict]] = []
@@ -112,10 +114,11 @@ def make_context(
 ) -> tuple[HandlerContext, NotificationRecorder]:
     """构造带替身的 HandlerContext。"""
     recorder = NotificationRecorder()
+    channel = SessionChannel(ConnectionSink(recorder.send), SessionRegistry())
     context = HandlerContext(
         task_manager=tm,
         llm_client=llm,
-        send_notification=recorder.send,
+        sessions=channel,
         config=ServerConfig(api_key="k", model="m"),
         agent_loop=AgentLoop(llm, ToolRegistry()),
     )

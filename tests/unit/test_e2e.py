@@ -10,6 +10,8 @@ from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import create_dispatcher
 from awesome_claude.core.server.tcp import TCPServer
+from awesome_claude.core.session.channel import SessionChannel
+from awesome_claude.core.session.registry import SessionRegistry
 from awesome_claude.core.task.manager import TaskManager
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.jsonrpc import (
@@ -47,17 +49,18 @@ def build_server(tmp_path: Path, llm: Any) -> TCPServer:
     task_manager = TaskManager(tracker)
     dispatcher = create_dispatcher()
     config = ServerConfig(api_key="k", model="m", host="127.0.0.1", port=0)
+    registry = SessionRegistry()
 
-    def context_factory(send_notification: Any) -> HandlerContext:
+    def context_factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(
             task_manager=task_manager,
             llm_client=llm,
-            send_notification=send_notification,
+            sessions=channel,
             config=config,
             agent_loop=AgentLoop(llm, ToolRegistry()),
         )
 
-    return TCPServer(config.host, config.port, dispatcher, context_factory)
+    return TCPServer(config.host, config.port, dispatcher, context_factory, registry)
 
 
 async def _run_until_shutdown(server: TCPServer) -> None:

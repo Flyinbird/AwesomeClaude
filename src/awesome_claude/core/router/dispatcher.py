@@ -9,6 +9,8 @@ from awesome_claude.protocol.methods import (
     METHOD_CHAT,
     METHOD_ECHO,
     METHOD_PING,
+    METHOD_SESSION_ATTACH,
+    METHOD_SESSION_DETACH,
     METHOD_SHUTDOWN,
 )
 from awesome_claude.shared.logging.app_logger import get_app_logger
@@ -59,7 +61,7 @@ class Dispatcher:
 
 
 def create_dispatcher() -> Dispatcher:
-    """创建 Dispatcher 并注册全部默认 handler（ping/echo/shutdown/chat）。
+    """创建 Dispatcher 并注册全部默认 handler。
 
     Returns:
         已注册默认方法的 Dispatcher。
@@ -67,6 +69,10 @@ def create_dispatcher() -> Dispatcher:
     from awesome_claude.core.handlers.chat import handle_chat
     from awesome_claude.core.handlers.echo import handle_echo
     from awesome_claude.core.handlers.ping import handle_ping
+    from awesome_claude.core.handlers.session import (
+        handle_session_attach,
+        handle_session_detach,
+    )
     from awesome_claude.core.handlers.shutdown import handle_shutdown
 
     dispatcher = Dispatcher()
@@ -74,4 +80,6 @@ def create_dispatcher() -> Dispatcher:
     dispatcher.register(METHOD_ECHO, handle_echo)
     dispatcher.register(METHOD_SHUTDOWN, handle_shutdown)
     dispatcher.register(METHOD_CHAT, handle_chat)
+    dispatcher.register(METHOD_SESSION_ATTACH, handle_session_attach)
+    dispatcher.register(METHOD_SESSION_DETACH, handle_session_detach)
     return dispatcher
