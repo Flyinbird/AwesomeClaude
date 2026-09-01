@@ -17,7 +17,7 @@ from awesome_claude.core.llm.events import (
 )
 from awesome_claude.core.tools.base import Tool
 from awesome_claude.core.tools.registry import ToolRegistry
-from awesome_claude.shared.types import TokenUsage
+from awesome_claude.shared.types import StopReason, TokenUsage
 
 
 def _done(
@@ -30,7 +30,7 @@ def _done(
 ) -> DoneEvent:
     """构造 DoneEvent，content 缺省为单个文本块。"""
     return DoneEvent(
-        stop_reason=stop_reason,
+        stop_reason=StopReason.from_raw(stop_reason),
         full_text=text,
         usage=TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens),
         message={
@@ -52,6 +52,38 @@ class FakeLLM:
         self._idx += 1
         for event in events:
             yield event
+
+
+class AlwaysToolLLM:
+    """每轮都请求工具；当 tools=None（收尾轮）时返回最终文本。"""
+
+    def __init__(self, tool_name: str = "noop") -> None:
+        self._tool_name = tool_name
+        self.tool_calls = 0
+
+    async def chat_stream(self, messages: list[dict[str, Any]], **kwargs: Any) -> Any:
+        if kwargs.get("tools") is None:
+            yield TextDeltaEvent("wrapped up")
+            yield _done("wrapped up", stop_reason="end_turn")
+            return
+        self.tool_calls += 1
+        yield ToolUseEndEvent(f"t{self.tool_calls}", self._tool_name, {})
+        yield _done(
+            "",
+            stop_reason="tool_use",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": f"t{self.tool_calls}",
+                    "name": self._tool_name,
+                    "input": {},
+                }
+            ],
+        )
+
+
+async def _noop(args: dict[str, Any]) -> str:
+    return "ok"
 
 
 class TestAgentLoop:
@@ -255,3 +287,33 @@ class TestAgentLoop:
         assert events[4].step_index == 2
         assert isinstance(events[5], StepFinished)
         assert events[5].has_tool_calls is False
+
+    async def test_max_steps_truncated_with_finalize(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            Tool(name="noop", description="d", input_schema={}, handler=_noop)
+        )
+        llm = AlwaysToolLLM()
+        loop = AgentLoop(llm, registry, max_steps=3)
+
+        result = await loop.run("x")
+
+        assert result.steps == 4
+        assert result.stop_reason == StopReason.MAX_STEPS
+        assert result.text == "wrapped up"
+        assert llm.tool_calls == 3
+
+    async def test_max_steps_truncated_without_finalize(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            Tool(name="noop", description="d", input_schema={}, handler=_noop)
+        )
+        llm = AlwaysToolLLM()
+        loop = AgentLoop(llm, registry, max_steps=3, finalize=False)
+
+        result = await loop.run("x")
+
+        assert result.steps == 3
+        assert result.stop_reason == StopReason.MAX_STEPS
+        assert result.text == ""
+        assert llm.tool_calls == 3

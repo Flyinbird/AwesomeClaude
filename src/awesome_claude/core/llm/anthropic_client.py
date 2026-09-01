@@ -25,7 +25,7 @@ from awesome_claude.core.llm.exceptions import (
     LLMRateLimitError,
     LLMTimeoutError,
 )
-from awesome_claude.shared.types import ChatResponse, TokenUsage
+from awesome_claude.shared.types import ChatResponse, StopReason, TokenUsage
 
 
 class AnthropicClient(LLMProvider):
@@ -101,7 +101,7 @@ class AnthropicClient(LLMProvider):
 
         input_tokens = 0
         output_tokens = 0
-        stop_reason = ""
+        stop_reason = StopReason.UNKNOWN
         full_text_parts: list[str] = []
         # index → 累积的 content block（仅 text 与 tool_use，thinking 不参与回填）
         blocks: dict[int, dict[str, Any]] = {}
@@ -159,7 +159,7 @@ class AnthropicClient(LLMProvider):
                             getattr(event, "delta", None), "stop_reason", None
                         )
                         if reason:
-                            stop_reason = reason
+                            stop_reason = StopReason.from_raw(reason)
                     elif event_type == "message_stop":
                         ordered = [blocks[i] for i in sorted(blocks)]
                         yield DoneEvent(
@@ -274,7 +274,7 @@ class AnthropicClient(LLMProvider):
         start = time.perf_counter()
         text_parts: list[str] = []
         usage = TokenUsage(input_tokens=0, output_tokens=0)
-        stop_reason = ""
+        stop_reason = StopReason.UNKNOWN
         async for event in self.chat_stream(messages, system, max_tokens):
             if isinstance(event, TextDeltaEvent):
                 text_parts.append(event.text)

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from awesome_claude.shared.types import TokenUsage
+from awesome_claude.shared.types import StopReason, TokenUsage
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +49,7 @@ class ToolUseEndEvent:
 class DoneEvent:
     """流式结束事件，携带本轮完整的 assistant message。"""
 
-    stop_reason: str
+    stop_reason: StopReason
     full_text: str
     usage: TokenUsage
     message: dict[str, Any]

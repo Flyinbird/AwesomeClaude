@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from awesome_claude.shared.types import TokenUsage
+from awesome_claude.shared.types import StopReason, TokenUsage
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,4 +14,4 @@ class AgentResult:
     messages: list[dict[str, Any]] = field(default_factory=list)
     usage: TokenUsage = field(default_factory=lambda: TokenUsage(0, 0))
     steps: int = 0
-    stop_reason: str = ""
+    stop_reason: StopReason = StopReason.UNKNOWN

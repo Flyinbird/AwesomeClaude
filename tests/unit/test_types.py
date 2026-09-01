@@ -5,6 +5,7 @@ from dataclasses import asdict
 
 from awesome_claude.shared.types import (
     ChatResponse,
+    StopReason,
     StreamChunk,
     TaskEvent,
     TaskStage,
@@ -27,13 +28,31 @@ class TestTaskStage:
         assert TaskStage.TOOL_FAILED.value == "tool_failed"
         assert TaskStage.TASK_COMPLETED.value == "task_completed"
         assert TaskStage.TASK_FAILED.value == "task_failed"
+        assert TaskStage.TASK_INTERRUPTED.value == "task_interrupted"
 
     def test_member_count(self) -> None:
-        assert len(TaskStage) == 11
+        assert len(TaskStage) == 12
 
     def test_is_str_enum(self) -> None:
         assert isinstance(TaskStage.TASK_CREATED, str)
         assert str(TaskStage.TASK_CREATED) == "task_created"
+
+
+class TestStopReason:
+    """StopReason 枚举测试。"""
+
+    def test_from_raw_known(self) -> None:
+        assert StopReason.from_raw("end_turn") is StopReason.END_TURN
+        assert StopReason.from_raw("tool_use") is StopReason.TOOL_USE
+        assert StopReason.from_raw("max_steps") is StopReason.MAX_STEPS
+
+    def test_from_raw_unknown(self) -> None:
+        assert StopReason.from_raw("weird") is StopReason.UNKNOWN
+        assert StopReason.from_raw("") is StopReason.UNKNOWN
+
+    def test_is_str_enum(self) -> None:
+        assert isinstance(StopReason.MAX_STEPS, str)
+        assert StopReason.MAX_STEPS == "max_steps"
 
 
 class TestTaskEvent:
@@ -126,7 +145,7 @@ class TestChatResponse:
         resp = ChatResponse(
             task_id="t1",
             text="hello",
-            stop_reason="end_turn",
+            stop_reason=StopReason.END_TURN,
             usage=usage,
             duration_ms=100.0,
             model="claude-sonnet-4-20250514",
@@ -143,7 +162,7 @@ class TestChatResponse:
         resp = ChatResponse(
             task_id="t1",
             text="hello",
-            stop_reason="end_turn",
+            stop_reason=StopReason.END_TURN,
             usage=usage,
             duration_ms=100.0,
             model="m",

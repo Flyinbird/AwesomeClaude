@@ -13,6 +13,7 @@ from awesome_claude.protocol.methods import (
     METHOD_ECHO,
     METHOD_PING,
     METHOD_SESSION_ATTACH,
+    NOTIFY_CHAT_INTERRUPTED,
     NOTIFY_CHAT_STREAM,
     NOTIFY_CHAT_TOOL_FINISHED,
     NOTIFY_CHAT_TOOL_STARTED,
@@ -82,6 +83,7 @@ class CLIApp:
         conn.on_notification(NOTIFY_CHAT_USER_MESSAGE, self._handle_user_message)
         conn.on_notification(NOTIFY_CHAT_TOOL_STARTED, self._handle_tool_started)
         conn.on_notification(NOTIFY_CHAT_TOOL_FINISHED, self._handle_tool_finished)
+        conn.on_notification(NOTIFY_CHAT_INTERRUPTED, self._handle_interrupted)
 
     async def _attach(self, conn: ClientConnection) -> None:
         """订阅到会话并回放历史。"""
@@ -124,6 +126,10 @@ class CLIApp:
         self._renderer.render_tool_finished(
             str(params.get("tool_name", "")), bool(params.get("is_error"))
         )
+
+    async def _handle_interrupted(self, params: dict[str, Any]) -> None:
+        """渲染任务被中断提示。"""
+        self._renderer.render_interrupted(str(params.get("stop_reason", "")))
 
     async def _process_line(self, line: str, conn: ClientConnection) -> bool:
         """处理一行输入；返回 False 表示退出。"""

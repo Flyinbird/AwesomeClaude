@@ -11,6 +11,7 @@ __all__ = [
     "METHOD_SESSION_ATTACH",
     "METHOD_SESSION_DETACH",
     "METHOD_SHUTDOWN",
+    "NOTIFY_CHAT_INTERRUPTED",
     "NOTIFY_CHAT_STREAM",
     "NOTIFY_CHAT_TOOL_FINISHED",
     "NOTIFY_CHAT_TOOL_STARTED",
@@ -19,6 +20,7 @@ __all__ = [
     "ChatResponse",
     "EchoParams",
     "EchoResult",
+    "InterruptedNotificationParams",
     "Method",
     "PingParams",
     "PingResult",
@@ -46,6 +48,7 @@ NOTIFY_CHAT_STREAM: str = "chat.stream"
 NOTIFY_CHAT_USER_MESSAGE: str = "chat.user_message"
 NOTIFY_CHAT_TOOL_STARTED: str = "chat.tool_started"
 NOTIFY_CHAT_TOOL_FINISHED: str = "chat.tool_finished"
+NOTIFY_CHAT_INTERRUPTED: str = "chat.interrupted"
 
 
 class PingParams(TypedDict):
@@ -133,3 +136,12 @@ class ToolFinishedNotificationParams(TypedDict):
     step_index: int
     tool_name: str
     is_error: bool
+
+
+class InterruptedNotificationParams(TypedDict):
+    """chat.interrupted 通知参数（达到最大步数，任务未完整完成）。"""
+
+    session_id: NotRequired[str | None]
+    task_id: str
+    stop_reason: str
+    step_index: int

@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+from awesome_claude.shared.types import StopReason
+
 
 @dataclass(frozen=True, slots=True)
 class StepStarted:
@@ -16,7 +18,7 @@ class StepFinished:
     """一轮 agent step 结束，含本轮 LLM 用量与是否产生工具调用。"""
 
     step_index: int
-    stop_reason: str
+    stop_reason: StopReason
     input_tokens: int
     output_tokens: int
     has_tool_calls: bool

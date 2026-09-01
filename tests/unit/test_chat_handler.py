@@ -6,11 +6,12 @@ from typing import Any
 from awesome_claude.core.agent.loop import AgentLoop
 from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.handlers.chat import handle_chat
-from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent
+from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent, ToolUseEndEvent
 from awesome_claude.core.llm.exceptions import LLMAuthError, LLMTimeoutError
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.registry import ConnectionSink, SessionRegistry
+from awesome_claude.core.tools.base import Tool
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.errors import (
     INTERNAL_ERROR,
@@ -18,8 +19,8 @@ from awesome_claude.protocol.errors import (
     LLM_AUTH_ERROR,
     LLM_TIMEOUT_ERROR,
 )
-from awesome_claude.protocol.methods import NOTIFY_CHAT_STREAM
-from awesome_claude.shared.types import TaskStage, TokenUsage
+from awesome_claude.protocol.methods import NOTIFY_CHAT_INTERRUPTED, NOTIFY_CHAT_STREAM
+from awesome_claude.shared.types import StopReason, TaskStage, TokenUsage
 
 
 class FakeTaskManager:
@@ -211,3 +212,54 @@ class TestHandleChat:
         assert resp["error"]["code"] == INTERNAL_ERROR
         assert len(tm.failed) == 1
         assert tm.failed[0][2] == "RuntimeError"
+
+    async def test_max_steps_interruption(self) -> None:
+        async def noop(args: dict[str, Any]) -> str:
+            return "ok"
+
+        tm = FakeTaskManager()
+        tool_events = [
+            ToolUseEndEvent("t1", "noop", {}),
+            DoneEvent(
+                stop_reason=StopReason.TOOL_USE,
+                full_text="",
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "noop",
+                            "input": {},
+                        }
+                    ],
+                },
+            ),
+        ]
+        llm = FakeLLMClient(tool_events)
+        registry = ToolRegistry()
+        registry.register(
+            Tool(name="noop", description="d", input_schema={}, handler=noop)
+        )
+        loop = AgentLoop(llm, registry, max_steps=2)
+
+        recorder = NotificationRecorder()
+        channel = SessionChannel(ConnectionSink(recorder.send), SessionRegistry())
+        context = HandlerContext(
+            task_manager=tm,
+            llm_client=llm,
+            sessions=channel,
+            config=ServerConfig(api_key="k", model="m"),
+            agent_loop=loop,
+        )
+
+        resp = await handle_chat({"message": "hi"}, context)
+
+        assert resp["stop_reason"] == "max_steps"
+        assert len(tm.completed) == 0
+        assert TaskStage.TASK_INTERRUPTED in [s[1] for s in tm.stages]
+        interrupted = [
+            method for method, _ in recorder.sent if method == NOTIFY_CHAT_INTERRUPTED
+        ]
+        assert len(interrupted) == 1

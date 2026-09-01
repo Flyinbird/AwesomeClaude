@@ -39,7 +39,8 @@ AwesomeClaude 的 Client 与 Core 之间使用 **JSON-RPC 2.0** 规范进行通�
 - 参数：`{"message": str, "session_id": str | null, "conversation_id": str | null, "max_tokens": int | null}`（后三者可选）
   - `session_id`：多客户端共享会话时指定；服务端据此广播通知并记录会话历史
 - 响应：`{"task_id": str, "text": str, "stop_reason": str, "usage": {"input_tokens": int, "output_tokens": int, ...}, "duration_ms": float, "model": str}`
-- 流程：服务端经 AgentLoop 编排多轮 LLM 调用与工具调用，期间持续推送 `chat.stream`、`chat.tool_started`、`chat.tool_finished` 通知（见下）
+  - `stop_reason` 取值：`end_turn` / `max_tokens` / `stop_sequence` / `tool_use` / `max_steps`（达到最大步数）/ `unknown`
+- 流程：服务端经 AgentLoop 编排多轮 LLM 调用与工具调用，期间持续推送 `chat.stream`、`chat.tool_started`、`chat.tool_finished` 通知（见下）；达到最大步数时推送 `chat.interrupted` 通知
 
 ### session.attach — 订阅会话
 
@@ -120,6 +121,23 @@ Server → Client 推送，广播会话内某个客户端发起的用户输入�
   "params": {
     "session_id": "shared-123",
     "message": "你好"
+  }
+}
+```
+
+## Notification：chat.interrupted
+
+Server → Client 推送，当 agent 循环达到最大步数（max_steps）但任务未完整完成时触发，用于提示用户结果可能不完整。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "chat.interrupted",
+  "params": {
+    "task_id": "a1b2c3d4",
+    "stop_reason": "max_steps",
+    "step_index": 26,
+    "session_id": "shared-123"
   }
 }
 ```

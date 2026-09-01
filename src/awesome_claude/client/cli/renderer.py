@@ -71,6 +71,14 @@ class StreamRenderer:
         status = "失败" if is_error else "完成"
         print(f"🔧 工具 {tool_name} {status}")
 
+    def render_interrupted(self, stop_reason: str) -> None:
+        """渲染"任务被中断"提示。
+
+        Args:
+            stop_reason: 中断原因（如 max_steps）。
+        """
+        print(f"⚠️ 任务未完整完成（{stop_reason}）")
+
     def render_user_message(self, message: str) -> None:
         """渲染其他客户端的用户输入。
 

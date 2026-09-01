@@ -28,13 +28,14 @@ from awesome_claude.protocol.errors import (
 )
 from awesome_claude.protocol.methods import (
     METHOD_CHAT,
+    NOTIFY_CHAT_INTERRUPTED,
     NOTIFY_CHAT_STREAM,
     NOTIFY_CHAT_TOOL_FINISHED,
     NOTIFY_CHAT_TOOL_STARTED,
     NOTIFY_CHAT_USER_MESSAGE,
 )
 from awesome_claude.shared.logging.app_logger import get_app_logger
-from awesome_claude.shared.types import ChatResponse, TaskStage
+from awesome_claude.shared.types import ChatResponse, StopReason, TaskStage
 
 _logger = get_app_logger("core.handlers.chat")
 
@@ -228,15 +229,37 @@ async def handle_chat(
             duration_ms=(time.monotonic() - start_time) * 1000.0,
             model=context.config.model,
         )
-        await task_manager.complete_task(
-            task_id,
-            start_time,
-            {
-                "text_length": len(response.text),
-                "stop_reason": response.stop_reason,
-                "steps": result.steps,
-            },
-        )
+        if result.stop_reason == StopReason.MAX_STEPS:
+            await task_manager.record_stage(
+                task_id,
+                start_time,
+                TaskStage.TASK_INTERRUPTED,
+                {
+                    "stop_reason": result.stop_reason,
+                    "steps": result.steps,
+                    "text_length": len(response.text),
+                },
+                step_index=result.steps,
+            )
+            await channel.broadcast(
+                NOTIFY_CHAT_INTERRUPTED,
+                {
+                    "task_id": task_id,
+                    "stop_reason": result.stop_reason,
+                    "step_index": result.steps,
+                    "session_id": session_id,
+                },
+            )
+        else:
+            await task_manager.complete_task(
+                task_id,
+                start_time,
+                {
+                    "text_length": len(response.text),
+                    "stop_reason": response.stop_reason,
+                    "steps": result.steps,
+                },
+            )
         return asdict(response)
     except LLMError as exc:
         await task_manager.fail_task(

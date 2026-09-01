@@ -56,9 +56,9 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `core/server/session.py` | 逐行读取 → 解析 → 分发 → 回写；注入 `SessionChannel` 上下文 |
 | `core/router/dispatcher.py` | 方法分发，未注册方法返回 METHOD_NOT_FOUND |
 | `core/router/context.py` | HandlerContext（task_manager / llm_client / sessions / config / agent_loop） |
-| `core/agent/loop.py` | AgentLoop：多轮 LLM + 工具编排，`on_event` / `on_step` 回调透出事件 |
+| `core/agent/loop.py` | AgentLoop：多轮 LLM + 工具编排，`on_event` / `on_step` 回调透出事件，撞 max_steps 时收尾/截断 |
 | `core/agent/events.py` | StepStarted / StepFinished / ToolStarted / ToolFinished |
-| `core/agent/result.py` | AgentResult（文本、消息历史、用量、步数、停止原因） |
+| `core/agent/result.py` | AgentResult（文本、消息历史、用量、步数、StopReason） |
 | `core/tools/registry.py` | ToolRegistry：注册 / 查询 / 执行 / 转 Anthropic tools schema |
 | `core/tools/builtin/time.py` | 内置 `get_time` 工具 |
 | `core/session/registry.py` | ConnectionSink / Session / SessionRegistry（订阅、广播、状态） |
@@ -73,7 +73,7 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `client/cli/app.py` | REPL 主循环，attach 会话、注册各类通知处理器 |
 | `client/transport/receiver.py` | 后台读取，response → Future，notification → handler |
 | `client/transport/connection.py` | 连接管理、request-response、通知注册 |
-| `shared/types.py` | TaskStage / TaskEvent / StreamChunk / TokenUsage / ChatResponse |
+| `shared/types.py` | TaskStage / StopReason / TaskEvent / StreamChunk / TokenUsage / ChatResponse |
 | `shared/logging/task_tracker.py` | TaskEvent 写入 `{log_dir}/{date}/{task_id}.jsonl` |
 | `shared/logging/app_logger.py` | structlog 配置（stdout 彩色文本 + 文件 JSON） |
 
@@ -116,6 +116,7 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `tool_failed` | 工具调用失败，记录 tool_name |
 | `task_completed` | 正常完成，记录 text_length、stop_reason、steps |
 | `task_failed` | 失败，记录 failed_stage、error_type、error_message、traceback |
+| `task_interrupted` | 达到最大步数（max_steps）未完整完成，记录 stop_reason、steps |
 
 每个阶段事件以 JSON 行写入 `logs/tasks/{date}/{task_id}.jsonl`，含 `task_id / stage / timestamp / duration_ms / data / step_index`。`step_index` 用于区分多轮 Agent Loop 中的轮次（顶层阶段为 null）。
 
