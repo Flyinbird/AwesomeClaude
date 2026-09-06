@@ -114,7 +114,14 @@ class AgentLoop:
         for step_index in range(1, self._max_steps + 1):
             steps = step_index
             if on_step is not None:
-                await on_step(StepStarted(step_index=step_index))
+                await on_step(
+                    StepStarted(
+                        step_index=step_index,
+                        messages=list(messages),
+                        system=system,
+                        tools=list(tools_param) if tools_param else None,
+                    )
+                )
 
             outcome = await self._chat_once(
                 messages, system=system, tools=tools_param, on_event=on_event
@@ -135,6 +142,7 @@ class AgentLoop:
                         input_tokens=outcome.input_tokens,
                         output_tokens=outcome.output_tokens,
                         has_tool_calls=has_tool_calls,
+                        text=outcome.text,
                     )
                 )
 
@@ -176,7 +184,14 @@ class AgentLoop:
             if self._finalize:
                 steps += 1
                 if on_step is not None:
-                    await on_step(StepStarted(step_index=steps))
+                    await on_step(
+                        StepStarted(
+                            step_index=steps,
+                            messages=list(messages),
+                            system=system,
+                            tools=None,
+                        )
+                    )
                 outcome = await self._chat_once(
                     messages,
                     system=self._finalize_system(system),
@@ -195,6 +210,7 @@ class AgentLoop:
                             input_tokens=outcome.input_tokens,
                             output_tokens=outcome.output_tokens,
                             has_tool_calls=bool(outcome.tool_uses),
+                            text=outcome.text,
                         )
                     )
                 final_text = outcome.text

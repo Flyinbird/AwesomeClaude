@@ -40,6 +40,23 @@ from awesome_claude.shared.types import ChatResponse, StopReason, TaskStage
 _logger = get_app_logger("core.handlers.chat")
 
 
+def _clip_text(text: str, *, head: int = 100, tail: int = 100) -> tuple[str, bool]:
+    """裁剪长文本为「前 head + 省略标记 + 后 tail」，供日志记录。
+
+    Args:
+        text: 原始文本。
+        head: 保留的头部字符数。
+        tail: 保留的尾部字符数。
+
+    Returns:
+        (预览文本, 是否被裁剪)。短文本原样返回、未裁剪标记为 False。
+    """
+    if len(text) <= head + tail:
+        return text, False
+    omitted = len(text) - head - tail
+    return f"{text[:head]}…[省略 {omitted} 字符]…{text[-tail:]}", True
+
+
 def _error_code(exc: LLMError) -> int:
     """LLM 异常 → JSON-RPC 错误码。"""
     if isinstance(exc, LLMAuthError):
@@ -122,6 +139,20 @@ async def handle_chat(
         nonlocal current_step
         if isinstance(event, StepStarted):
             current_step = event.step_index
+            if event.step_index == 1:
+                await task_manager.record_stage(
+                    task_id,
+                    start_time,
+                    TaskStage.CONTEXT_BUILT,
+                    {
+                        "system": event.system,
+                        "messages": event.messages,
+                        "message_count": len(event.messages),
+                        "tools": [t["name"] for t in event.tools]
+                        if event.tools
+                        else [],
+                    },
+                )
             await task_manager.record_stage(
                 task_id,
                 start_time,
@@ -133,7 +164,10 @@ async def handle_chat(
                 task_id,
                 start_time,
                 TaskStage.LLM_REQUEST_SENT,
-                {"model": context.config.model},
+                {
+                    "model": context.config.model,
+                    "messages": event.messages,
+                },
                 step_index=event.step_index,
             )
             await task_manager.record_stage(
@@ -144,6 +178,7 @@ async def handle_chat(
                 step_index=event.step_index,
             )
         elif isinstance(event, StepFinished):
+            text, truncated = _clip_text(event.text)
             await task_manager.record_stage(
                 task_id,
                 start_time,
@@ -153,6 +188,8 @@ async def handle_chat(
                     "input_tokens": event.input_tokens,
                     "output_tokens": event.output_tokens,
                     "has_tool_calls": event.has_tool_calls,
+                    "text": text,
+                    "text_truncated": truncated,
                 },
                 step_index=event.step_index,
             )
@@ -179,7 +216,11 @@ async def handle_chat(
                 task_id,
                 start_time,
                 TaskStage.TOOL_FAILED if event.is_error else TaskStage.TOOL_COMPLETED,
-                {"tool_name": event.tool_name, "is_error": event.is_error},
+                {
+                    "tool_name": event.tool_name,
+                    "is_error": event.is_error,
+                    "content": event.content,
+                },
                 step_index=event.step_index,
             )
             await channel.broadcast(
@@ -194,10 +235,6 @@ async def handle_chat(
             )
 
     try:
-        await task_manager.record_stage(
-            task_id, start_time, TaskStage.CONTEXT_BUILT, {"message_count": 1}
-        )
-
         if session_id is not None:
             await channel.broadcast(
                 NOTIFY_CHAT_USER_MESSAGE,
@@ -230,6 +267,7 @@ async def handle_chat(
             model=context.config.model,
         )
         if result.stop_reason == StopReason.MAX_STEPS:
+            text, truncated = _clip_text(response.text)
             await task_manager.record_stage(
                 task_id,
                 start_time,
@@ -238,6 +276,8 @@ async def handle_chat(
                     "stop_reason": result.stop_reason,
                     "steps": result.steps,
                     "text_length": len(response.text),
+                    "text": text,
+                    "text_truncated": truncated,
                 },
                 step_index=result.steps,
             )
@@ -251,6 +291,7 @@ async def handle_chat(
                 },
             )
         else:
+            text, truncated = _clip_text(response.text)
             await task_manager.complete_task(
                 task_id,
                 start_time,
@@ -258,6 +299,8 @@ async def handle_chat(
                     "text_length": len(response.text),
                     "stop_reason": response.stop_reason,
                     "steps": result.steps,
+                    "text": text,
+                    "text_truncated": truncated,
                 },
             )
         return asdict(response)
