@@ -29,9 +29,10 @@ class TestTaskStage:
         assert TaskStage.TASK_COMPLETED.value == "task_completed"
         assert TaskStage.TASK_FAILED.value == "task_failed"
         assert TaskStage.TASK_INTERRUPTED.value == "task_interrupted"
+        assert TaskStage.TASK_CANCELLED.value == "task_cancelled"
 
     def test_member_count(self) -> None:
-        assert len(TaskStage) == 12
+        assert len(TaskStage) == 13
 
     def test_is_str_enum(self) -> None:
         assert isinstance(TaskStage.TASK_CREATED, str)

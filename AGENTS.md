@@ -41,12 +41,13 @@ awesome-claude/
 │       │   │   ├── context.py      # ToolContext（handler(args, ctx) 注入）
 │       │   │   ├── registry.py     # ToolRegistry（绑定 ctx、注册/执行/转 schema）
 │       │   │   └── builtin/        # 内置工具（time.py: get_time；fs.py: 文件四件套）
-│       │   ├── session/       # 会话管理（多客户端共享）
-│       │   │   ├── registry.py     # ConnectionSink / Session / SessionRegistry
-│       │   │   └── channel.py      # SessionChannel（每连接门面）
+│       │   ├── session/       # 会话管理（多客户端共享 + Run 生命周期）
+│       │   │   ├── registry.py     # ConnectionSink / Session / SessionRegistry（在途 Run、零订阅取消、临时会话）
+│       │   │   ├── run.py          # Run / RunState / RunInitiator（会话拥有的执行实体，唯一终态）
+│       │   │   └── channel.py      # SessionChannel（每连接门面，broadcast / broadcast_to）
 │       │   ├── server/
 │       │   │   ├── tcp.py      # TCPServer：TCP 监听、多客户端、优雅停止
-│       │   │   └── session.py  # ClientSession：逐行读取、解析、分发、回写、注入 SessionChannel
+│       │   │   └── session.py  # ClientSession：读循环解耦、chat 任务化为 Run、断连取消、发送串行化
 │       │   ├── router/
 │       │   │   ├── dispatcher.py  # Dispatcher + create_dispatcher()
 │       │   │   └── context.py     # HandlerContext
@@ -94,14 +95,15 @@ awesome-claude/
 ```
 **注意，项目结构并非一层不变，随着项目迭代，项目结构也需要迭代**
 ## 核心概念
-- **HandlerContext**：传给 handler 的运行时上下文，含 `task_manager`、`llm_client`、`sessions`（SessionChannel，多客户端会话广播）、`config`、`agent_loop`。由 ClientSession 每连接创建一次（注入绑定到该连接的 `SessionChannel`）。
+- **HandlerContext**：传给 handler 的运行时上下文，含 `task_manager`、`llm_client`、`sessions`（SessionChannel，多客户端会话广播）、`config`、`agent_loop`、`run`（当前对话 Run，非对话请求为 None）。由 ClientSession 每连接创建一次（注入绑定到该连接的 `SessionChannel`），chat 请求经 `dataclasses.replace` 注入当次 Run。
 - **HandlerFunc**：`Callable[[dict | None, HandlerContext], Awaitable[dict]]`。handler 返回**结果 dict**；出错时返回含 `"error"` 键的错误响应 dict（`build_error_response`），session 负责补全 `id`。
 - **方法注册**：handler 用 `@register_handler(METHOD_X)` 装饰；`create_dispatcher()` 显式注册 ping/echo/shutdown/chat/session.attach/session.detach 六个方法。
 - **Agent Loop**：`AgentLoop` 编排多轮 LLM + 工具调用；chat handler 委托 `agent_loop.run()`，通过 `on_event`（LLM 流式事件）与 `on_step`（step/tool 结构事件）回调转为 `chat.stream` / `chat.tool_*` 通知并记录任务阶段。
 - **工具执行上下文（ToolContext）**：`ToolHandler` 签名为 `Callable[[dict, ToolContext], Awaitable[Any]]`；`ToolRegistry` 构造时绑定全局 `ToolContext`（workspace_root + fs 读写限额），执行时统一注入。后续新工具能力（命令执行策略等）直接扩展 ToolContext 字段。
 - **文件工具沙箱**：内置 fs 工具的路径参数统一做 realpath 解析（含符号链接）后必须落在 `workspace_root` 内，越界抛 `PathOutsideRootError`；只处理 UTF-8 文本（二进制/含空字节拒绝）；`write_file` 不自动创建父目录、超出 `fs_max_write` 拒绝；`edit_file` 要求 `old_string` 唯一匹配；`read_file` 超出 `fs_max_read` 截断并标记。
-- **多客户端会话**：`SessionRegistry` 维护 `session_id → Session`（订阅连接集合 + 对话历史）。客户端经 `session.attach` 订阅，`SessionChannel.broadcast` 在已订阅时扇出到会话内所有连接，未订阅时单播（向后兼容）。
-- **任务生命周期**：`TaskManager.create_task()` 生成 8 位 UUID task_id（记录 `time.monotonic()` 起点）→ `record_stage` / `complete_task` / `fail_task`，由 `TaskTracker` 写入 JSONL。多轮 Agent Loop 下用 `step_index` 区分轮次。
+- **多客户端会话**：`SessionRegistry` 维护 `session_id → Session`（订阅连接集合 + 对话历史 + 至多一个在途 Run）。客户端经 `session.attach` 订阅，`SessionChannel.broadcast` 在已订阅时扇出到会话内所有连接，未订阅时单播（向后兼容）；`broadcast_to` 可显式指定会话。
+- **Run 生命周期**：一次对话执行是由会话拥有的 `Run`（`core/session/run.py`），状态机 `RUNNING → {COMPLETED, FAILED, INTERRUPTED, CANCELLED}`，终态只记录一次、重复取消为 no-op。每会话至多一个活跃 Run，并发对话返回 `-32004 SESSION_BUSY`。最后一个订阅者 detach（零订阅）时取消活跃 Run 并记录 `task_cancelled`；未携带 `session_id` 的对话使用临时会话，空置即销毁。
+- **任务生命周期**：`TaskManager.create_task()` 生成 8 位 UUID task_id（记录 `time.monotonic()` 起点）→ `record_stage` / `complete_task` / `fail_task`，由 `TaskTracker` 写入 JSONL。多轮 Agent Loop 下用 `step_index` 区分轮次。取消经 `record_stage(TASK_CANCELLED)` 落地。
 - **时间基准**：所有阶段 duration 计算必须用单调时钟 `time.monotonic()`（TaskTracker 内部同样使用），禁止混用 `time.time()`。
 
 ## 编码规范
@@ -109,7 +111,7 @@ awesome-claude/
 - 所有 public 函数/类必须有 docstring（Google 风格：Args / Returns / Raises）
 - 异步函数优先，不阻塞事件循环；同步 I/O 尽量用 `asyncio.to_thread`
 - 错误处理使用自定义异常层级（如 `LLMError`、`JsonRpcProtocolError`），不吞没异常
-- 所有 JSON-RPC 错误必须返回标准 error code；LLM 错误用 -32001/-32002/-32003
+- 所有 JSON-RPC 错误必须返回标准 error code；LLM 错误用 -32001/-32002/-32003，会话忙用 -32004
 - 日志使用 `shared/logging/app_logger.py` 的 `get_app_logger()`，禁止在 src/ 中 `print`（仅 CLI 渲染器允许 print）
 - 每个模块顶部写明该模块的职责（一句话 docstring）
 - 禁止写死敏感信息（API key 等一律走环境变量）

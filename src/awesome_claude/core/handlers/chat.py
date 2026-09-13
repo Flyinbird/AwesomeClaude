@@ -18,6 +18,7 @@ from awesome_claude.core.llm.exceptions import (
     LLMTimeoutError,
 )
 from awesome_claude.core.router.context import HandlerContext
+from awesome_claude.core.session.run import RunState
 from awesome_claude.protocol.errors import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
@@ -159,19 +160,39 @@ async def handle_chat(
     task_manager = context.task_manager
     agent_loop = context.agent_loop
     channel = context.sessions
+    run = context.run
     if agent_loop is None:
+        if run is not None:
+            run.finish(RunState.FAILED)
         return build_error_response(None, INTERNAL_ERROR, "agent loop 未配置")
 
-    try:
-        task_id, start_time = await task_manager.create_task(
-            message, client_addr="unknown"
-        )
-    except Exception as exc:
-        _logger.exception("create task failed")
-        return build_error_response(None, INTERNAL_ERROR, f"任务创建失败: {exc}")
+    if run is not None:
+        task_id = run.run_id
+        start_time = run.start_time
+    else:
+        try:
+            task_id, start_time = await task_manager.create_task(
+                message, client_addr="unknown"
+            )
+        except Exception as exc:
+            _logger.exception("create task failed")
+            return build_error_response(None, INTERNAL_ERROR, f"任务创建失败: {exc}")
 
     if session_id is not None and channel.session_id != session_id:
         channel.attach(session_id)
+
+    named_session = session_id if isinstance(session_id, str) and session_id else None
+
+    async def emit(
+        method: str, payload: dict[str, Any], *, exclude_self: bool = False
+    ) -> None:
+        """向会话（命名会话）或发起连接（临时会话）发送通知。"""
+        if named_session is not None:
+            await channel.broadcast_to(
+                named_session, method, payload, exclude_self=exclude_self
+            )
+        else:
+            await channel.broadcast(method, payload, exclude_self=exclude_self)
 
     chunk_index = 0
     current_step = 0
@@ -180,7 +201,7 @@ async def handle_chat(
         nonlocal chunk_index
         if isinstance(event, TextDeltaEvent):
             chunk_index += 1
-            await channel.broadcast(
+            await emit(
                 NOTIFY_CHAT_STREAM,
                 {
                     "task_id": task_id,
@@ -257,7 +278,7 @@ async def handle_chat(
                 {"tool_name": event.tool_name, "args": event.args},
                 step_index=event.step_index,
             )
-            await channel.broadcast(
+            await emit(
                 NOTIFY_CHAT_TOOL_STARTED,
                 {
                     "task_id": task_id,
@@ -281,7 +302,7 @@ async def handle_chat(
                 },
                 step_index=event.step_index,
             )
-            await channel.broadcast(
+            await emit(
                 NOTIFY_CHAT_TOOL_FINISHED,
                 {
                     "task_id": task_id,
@@ -293,8 +314,8 @@ async def handle_chat(
             )
 
     try:
-        if session_id is not None:
-            await channel.broadcast(
+        if named_session is not None:
+            await emit(
                 NOTIFY_CHAT_USER_MESSAGE,
                 {"session_id": session_id, "message": message},
                 exclude_self=True,
@@ -302,7 +323,7 @@ async def handle_chat(
 
         result = await agent_loop.run(message, on_event=on_event, on_step=on_step)
 
-        await channel.broadcast(
+        await emit(
             NOTIFY_CHAT_STREAM,
             {
                 "task_id": task_id,
@@ -313,8 +334,8 @@ async def handle_chat(
             },
         )
 
-        if session_id is not None:
-            channel.record_turn(message, result.text, task_id)
+        if named_session is not None:
+            channel.record_turn(message, result.text, task_id, session_id=named_session)
 
         response = ChatResponse(
             task_id=task_id,
@@ -339,7 +360,7 @@ async def handle_chat(
                 },
                 step_index=result.steps,
             )
-            await channel.broadcast(
+            await emit(
                 NOTIFY_CHAT_INTERRUPTED,
                 {
                     "task_id": task_id,
@@ -348,6 +369,8 @@ async def handle_chat(
                     "session_id": session_id,
                 },
             )
+            if run is not None:
+                run.finish(RunState.INTERRUPTED)
         else:
             text, truncated = _clip_text(response.text)
             await task_manager.complete_task(
@@ -361,6 +384,8 @@ async def handle_chat(
                     "text_truncated": truncated,
                 },
             )
+            if run is not None:
+                run.finish(RunState.COMPLETED)
         return asdict(response)
     except LLMError as exc:
         await task_manager.fail_task(
@@ -370,6 +395,8 @@ async def handle_chat(
             _failed_stage(exc),
             step_index=current_step or None,
         )
+        if run is not None:
+            run.finish(RunState.FAILED)
         return build_error_response(None, _error_code(exc), str(exc))
     except Exception as exc:
         _logger.exception("chat handler failed")
@@ -380,4 +407,6 @@ async def handle_chat(
             TaskStage.LLM_STREAMING,
             step_index=current_step or None,
         )
+        if run is not None:
+            run.finish(RunState.FAILED)
         return build_error_response(None, INTERNAL_ERROR, f"Internal error: {exc}")

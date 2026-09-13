@@ -1,9 +1,13 @@
 """core/session 会话注册表与通道测试。"""
 
+import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.registry import ConnectionSink, SessionRegistry
+from awesome_claude.core.session.run import Run, RunState
+from awesome_claude.shared.types import TaskStage
 
 
 class Recorder:
@@ -38,7 +42,7 @@ class TestSessionRegistry:
         sink = ConnectionSink(Recorder().send)
         reg.attach("a", sink)
         reg.attach("b", sink)
-        reg.detach(sink)
+        await reg.detach(sink)
         assert sink not in reg.get("a").sinks
         assert sink not in reg.get("b").sinks
 
@@ -71,11 +75,20 @@ class TestSessionRegistry:
         reg = SessionRegistry()
         session = reg.get_or_create("abc")
         session.history.append({"role": "user"})
-        session.task_ids.add("t1")
+        run = Run("t1", "abc", 0.0)
+        session.active_run = run
         state = reg.state("abc")
         assert state["session_id"] == "abc"
         assert state["history"] == [{"role": "user"}]
         assert state["active_tasks"] == ["t1"]
+
+    async def test_state_excludes_finished_run(self) -> None:
+        reg = SessionRegistry()
+        session = reg.get_or_create("abc")
+        run = Run("t1", "abc", 0.0)
+        run.finish(RunState.COMPLETED)
+        session.active_run = run
+        assert reg.state("abc")["active_tasks"] == []
 
     async def test_state_missing_returns_empty(self) -> None:
         reg = SessionRegistry()
@@ -84,6 +97,67 @@ class TestSessionRegistry:
             "history": [],
             "active_tasks": [],
         }
+
+
+class TestSessionActiveRun:
+    """会话在途 Run 与零订阅取消测试。"""
+
+    async def test_zero_subscribers_cancels_active_run(self) -> None:
+        tm = AsyncMock()
+        reg = SessionRegistry(tm)
+        sink = ConnectionSink(Recorder().send)
+        session = reg.attach("abc", sink)
+        run = Run("t1", "abc", 0.0)
+        run.set_task(asyncio.create_task(asyncio.Event().wait()))
+        session.active_run = run
+
+        await reg.detach(sink)
+
+        assert run.state is RunState.CANCELLED
+        assert session.active_run is None
+        tm.record_stage.assert_awaited_once()
+        assert tm.record_stage.await_args.args[2] is TaskStage.TASK_CANCELLED
+
+    async def test_other_subscriber_keeps_run(self) -> None:
+        reg = SessionRegistry()
+        sink1 = ConnectionSink(Recorder().send)
+        reg.attach("abc", sink1)
+        session = reg.attach("abc", ConnectionSink(Recorder().send))
+        run = Run("t1", "abc", 0.0)
+        session.active_run = run
+
+        await reg.detach(sink1)
+
+        assert run.is_active
+        assert session.active_run is run
+
+    async def test_ephemeral_session_destroyed_on_empty(self) -> None:
+        reg = SessionRegistry()
+        sink = ConnectionSink(Recorder().send)
+        session = reg.attach("eph", sink)
+        session.ephemeral = True
+        await reg.detach(sink)
+        assert reg.get("eph") is None
+
+    async def test_named_session_kept_on_empty(self) -> None:
+        reg = SessionRegistry()
+        sink = ConnectionSink(Recorder().send)
+        reg.attach("named", sink)
+        await reg.detach(sink)
+        assert reg.get("named") is not None
+
+    async def test_cancel_all_active_runs(self) -> None:
+        tm = AsyncMock()
+        reg = SessionRegistry(tm)
+        session = reg.get_or_create("abc")
+        run = Run("t1", "abc", 0.0)
+        run.set_task(asyncio.create_task(asyncio.Event().wait()))
+        session.active_run = run
+
+        await reg.cancel_all_active_runs()
+
+        assert run.state is RunState.CANCELLED
+        assert session.active_run is None
 
 
 class TestSessionChannel:
@@ -134,7 +208,7 @@ class TestSessionChannel:
         ch2 = SessionChannel(ConnectionSink(r2.send), reg)
         ch1.attach("abc")
         ch2.attach("abc")
-        ch1.detach()
+        await ch1.detach()
         await ch1.broadcast("m", {})
         assert r2.sent == []
         assert r1.sent == [("m", {})]
@@ -150,7 +224,6 @@ class TestSessionChannel:
             {"role": "user", "content": "hi", "task_id": "task1"},
             {"role": "assistant", "content": "hello", "task_id": "task1"},
         ]
-        assert session.task_ids == {"task1"}
 
     async def test_record_turn_noop_without_attach(self) -> None:
         reg = SessionRegistry()

@@ -95,8 +95,13 @@ class TCPServer:
         await self._stop_event.wait()
 
     async def stop(self) -> None:
-        """停止监听并关闭所有连接。"""
+        """停止监听并关闭所有连接。
+
+        先取消全部在途 Run 并落地终态（从本方法所在的安全上下文发起），
+        再取消连接任务，避免连接任务被取消后二次打断 Run 的清理。
+        """
         self._stop_event.set()
+        await self._registry.cancel_all_active_runs()
         tasks = list(self._client_tasks)
         for task in tasks:
             task.cancel()

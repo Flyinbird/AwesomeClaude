@@ -47,5 +47,5 @@ async def handle_session_detach(
     Returns:
         空结果。
     """
-    context.sessions.detach()
+    await context.sessions.detach()
     return {}

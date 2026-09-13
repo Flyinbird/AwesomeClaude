@@ -154,10 +154,11 @@ Server → Client 推送，当 agent 循环达到最大步数（max_steps）但�
 | `-32602` | Invalid params | 参数不合法（如 chat 缺少 message） |
 | `-32603` | Internal error | 处理器内部异常 |
 
-### 应用错误码（LLM）
+### 应用错误码
 
 | 错误码 | 含义 | 触发条件 |
 | --- | --- | --- |
 | `-32001` | LLM error | LLM API 调用失败 / 限流 / 内容过滤 |
 | `-32002` | LLM auth error | API key 无效（AuthenticationError） |
 | `-32003` | LLM timeout | 请求超时（APITimeoutError） |
+| `-32004` | Session busy | 目标会话已有在途对话（活跃 Run），并发 `chat` 被拒绝 |

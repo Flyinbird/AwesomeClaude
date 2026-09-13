@@ -68,7 +68,7 @@ async def server(tmp_path: Any) -> Any:
     tracker = TaskTracker(str(tmp_path / "tasks"))
     task_manager = TaskManager(tracker)
     config = ServerConfig(api_key="test-key", host="127.0.0.1", port=0)
-    registry = SessionRegistry()
+    registry = SessionRegistry(task_manager)
 
     def context_factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(

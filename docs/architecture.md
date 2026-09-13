@@ -53,16 +53,17 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `protocol/methods.py` | 方法名常量与参数/返回类型 TypedDict，client/core 共用 |
 | `protocol/errors.py` | 标准错误码与 LLM 应用错误码、`build_error_response` |
 | `core/server/tcp.py` | TCP 监听、多客户端并发、优雅停止 |
-| `core/server/session.py` | 逐行读取 → 解析 → 分发 → 回写；注入 `SessionChannel` 上下文 |
+| `core/server/session.py` | 逐行读取 → 解析 → 分发 → 回写；控制类请求内联、chat 任务化为 Run；断连取消与发送串行化 |
 | `core/router/dispatcher.py` | 方法分发，未注册方法返回 METHOD_NOT_FOUND |
-| `core/router/context.py` | HandlerContext（task_manager / llm_client / sessions / config / agent_loop） |
+| `core/router/context.py` | HandlerContext（task_manager / llm_client / sessions / config / agent_loop / run） |
 | `core/agent/loop.py` | AgentLoop：多轮 LLM + 工具编排，`on_event` / `on_step` 回调透出事件，撞 max_steps 时收尾/截断 |
 | `core/agent/events.py` | StepStarted / StepFinished / ToolStarted / ToolFinished |
 | `core/agent/result.py` | AgentResult（文本、消息历史、用量、步数、StopReason） |
 | `core/tools/registry.py` | ToolRegistry：注册 / 查询 / 执行 / 转 Anthropic tools schema |
 | `core/tools/builtin/time.py` | 内置 `get_time` 工具 |
-| `core/session/registry.py` | ConnectionSink / Session / SessionRegistry（订阅、广播、状态） |
-| `core/session/channel.py` | SessionChannel：每连接门面，广播或单播 |
+| `core/session/registry.py` | ConnectionSink / Session / SessionRegistry（订阅、在途 Run、广播、状态、零订阅取消与临时会话销毁） |
+| `core/session/run.py` | Run / RunState / RunInitiator：会话拥有的对话执行实体与唯一终态状态机 |
+| `core/session/channel.py` | SessionChannel：每连接门面，广播（含指定会话）或单播 |
 | `core/handlers/chat.py` | chat 完整流程：任务追踪 + 委托 AgentLoop + 通知广播 |
 | `core/handlers/session.py` | session.attach / session.detach |
 | `core/llm/base.py` | LLMProvider 协议：供应商无关的流式/非流式客户端接口 |
@@ -117,14 +118,25 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `task_completed` | 正常完成，记录 text_length、stop_reason、steps |
 | `task_failed` | 失败，记录 failed_stage、error_type、error_message、traceback |
 | `task_interrupted` | 达到最大步数（max_steps）未完整完成，记录 stop_reason、steps |
+| `task_cancelled` | 在途 Run 被取消（断连零订阅 / 服务端退出），记录 session_id |
 
 每个阶段事件以 JSON 行写入 `logs/tasks/{date}/{task_id}.jsonl`，含 `task_id / stage / timestamp / duration_ms / data / step_index`。`step_index` 用于区分多轮 Agent Loop 中的轮次（顶层阶段为 null）。
 
-## 多客户端会话
+## 多客户端会话与 Run 生命周期
 
-- `SessionRegistry` 维护 `session_id → Session`，每个 `Session` 持有订阅连接集合（`ConnectionSink`）、对话历史（`history`）与关联任务（`task_ids`）。
-- 客户端通过 `session.attach` 订阅会话并回放历史；`SessionChannel.broadcast` 在已订阅时扇出到会话内所有连接，未订阅时单播（向后兼容）。
+- `SessionRegistry` 维护 `session_id → Session`，每个 `Session` 持有订阅连接集合（`ConnectionSink`）、对话历史（`history`）、至多一个在途 `Run`（`active_run`）与临时会话标记（`ephemeral`）。
+- 客户端通过 `session.attach` 订阅会话并回放历史；`SessionChannel.broadcast` 在已订阅时扇出到会话内所有连接，未订阅时单播（向后兼容）。`broadcast_to` 可显式指定会话，供在途 Run 在发起连接断开后继续送达其余订阅者。
 - `chat.user_message` 广播用户输入时排除发起方（`exclude_self`）。
+- **Run**：每次对话执行由目标会话拥有，承载一个 asyncio 任务，状态机为 `RUNNING → {COMPLETED, FAILED, INTERRUPTED, CANCELLED}`，终态只记录一次。未携带 `session_id` 的对话使用服务端生成的临时会话，对话结束即销毁；命名会话在无订阅时保留历史以供回放。
+- **每会话单活跃 Run**：会话已有在途 Run 时，新对话被拒绝并返回应用错误码 `-32004 SESSION_BUSY`。
+- **零订阅取消**：最后一个订阅连接 detach 后，会话活跃 Run 被取消并在非取消上下文记录 `task_cancelled`。`session.attach` 返回的 `active_tasks` 仅包含在途 Run 标识。
+- **取消不写历史**：被取消的 Run 不向会话历史追加轮次，避免半截对话污染回放。
+
+## 连接生命周期
+
+- 连接读循环与请求执行解耦：ping / echo / session.* / shutdown 等控制类请求按到达顺序内联处理；仅 `chat` 作为 Run 异步执行，使读循环在对话期间仍能受理消息并及时感知断开。
+- 连接发送串行化：每个连接持有发送锁与关闭标志，统一处理并发写入（控制响应、Run 最终响应、会话广播），连接关闭后的发送被安全丢弃。
+- 服务端优雅退出：关闭流程先取消全部在途 Run 并落地终态，再取消连接任务，避免连接任务被取消后二次打断 Run 清理。
 
 ## 架构约束
 

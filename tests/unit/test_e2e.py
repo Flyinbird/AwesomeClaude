@@ -49,7 +49,7 @@ def build_server(tmp_path: Path, llm: Any) -> TCPServer:
     task_manager = TaskManager(tracker)
     dispatcher = create_dispatcher()
     config = ServerConfig(api_key="k", model="m", host="127.0.0.1", port=0)
-    registry = SessionRegistry()
+    registry = SessionRegistry(task_manager)
 
     def context_factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(

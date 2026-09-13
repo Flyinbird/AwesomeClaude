@@ -20,18 +20,28 @@ class TaskManager:
         """
         self._tracker = task_tracker
 
-    async def create_task(self, user_input: str, client_addr: str) -> tuple[str, float]:
+    async def create_task(
+        self,
+        user_input: str,
+        client_addr: str,
+        *,
+        task_id: str | None = None,
+        start_time: float | None = None,
+    ) -> tuple[str, float]:
         """创建任务并记录 TASK_CREATED 事件。
 
         Args:
             user_input: 用户输入。
             client_addr: 客户端地址。
+            task_id: 指定任务 ID（缺省生成 UUID 前 8 位）。
+            start_time: 指定单调时钟起点（缺省取当前时间）。
 
         Returns:
-            (task_id, start_time)：task_id 为 UUID 前 8 位，start_time 为单调时钟起点。
+            (task_id, start_time)：task_id 为 8 位 UUID（或指定值），
+            start_time 为单调时钟起点。
         """
-        task_id = uuid.uuid4().hex[:8]
-        start_time = time.monotonic()
+        task_id = task_id or uuid.uuid4().hex[:8]
+        start_time = time.monotonic() if start_time is None else start_time
         await self._tracker.log_event(
             task_id,
             TaskStage.TASK_CREATED,

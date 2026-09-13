@@ -20,6 +20,7 @@ class TaskStage(StrEnum):
     TASK_COMPLETED = "task_completed"
     TASK_FAILED = "task_failed"
     TASK_INTERRUPTED = "task_interrupted"
+    TASK_CANCELLED = "task_cancelled"
 
 
 class StopReason(StrEnum):

@@ -11,6 +11,7 @@ INTERNAL_ERROR: int = -32603
 LLM_ERROR: int = -32001
 LLM_AUTH_ERROR: int = -32002
 LLM_TIMEOUT_ERROR: int = -32003
+SESSION_BUSY: int = -32004
 
 
 def build_error_response(

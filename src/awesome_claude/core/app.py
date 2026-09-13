@@ -80,7 +80,7 @@ async def run_server(config: ServerConfig | None = None) -> None:
         tool_registry.register(tool)
     agent_loop = AgentLoop(llm_client, tool_registry)
     dispatcher = create_dispatcher()
-    session_registry = SessionRegistry()
+    session_registry = SessionRegistry(task_manager)
     context_factory = build_context_factory(
         task_manager, llm_client, config, agent_loop
     )
