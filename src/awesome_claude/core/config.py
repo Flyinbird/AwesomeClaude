@@ -1,7 +1,8 @@
 """服务端配置（host, port, model, api_key, 日志等）。"""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -18,6 +19,9 @@ class ServerConfig:
     max_tokens: int = 4096
     log_level: str = "INFO"
     log_dir: str = "logs"
+    workspace_dir: Path = field(default_factory=Path.cwd)
+    fs_max_read: int = 30000
+    fs_max_write: int = 100000
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
@@ -32,13 +36,16 @@ def load_server_config() -> ServerConfig:
         ANTHROPIC_API_KEY（必需）、AWESOME_CLAUDE_HOST、AWESOME_CLAUDE_PORT、
         AWESOME_CLAUDE_MODEL、AWESOME_CLAUDE_BASE_URL（可选，如 DeepSeek 的
         https://api.deepseek.com/anthropic）、AWESOME_CLAUDE_MAX_TOKENS、
-        AWESOME_CLAUDE_LOG_LEVEL、AWESOME_CLAUDE_LOG_DIR。
+        AWESOME_CLAUDE_LOG_LEVEL、AWESOME_CLAUDE_LOG_DIR、
+        AWESOME_CLAUDE_WORKSPACE_DIR（可选，文件工具沙箱根目录）、
+        AWESOME_CLAUDE_FS_MAX_READ、AWESOME_CLAUDE_FS_MAX_WRITE。
 
     Returns:
         服务端配置。
 
     Raises:
-        ValueError: 缺少必需的 ANTHROPIC_API_KEY，或 PORT/MAX_TOKENS 不是整数。
+        ValueError: 缺少必需的 ANTHROPIC_API_KEY，或 PORT/MAX_TOKENS/
+            FS_MAX_READ/FS_MAX_WRITE 不是整数。
     """
     load_dotenv()
 
@@ -46,6 +53,7 @@ def load_server_config() -> ServerConfig:
     if not api_key:
         raise ValueError("缺少必需的环境变量 ANTHROPIC_API_KEY")
 
+    workspace_dir = os.getenv("AWESOME_CLAUDE_WORKSPACE_DIR")
     return ServerConfig(
         api_key=api_key,
         host=os.getenv("AWESOME_CLAUDE_HOST", "127.0.0.1"),
@@ -55,6 +63,9 @@ def load_server_config() -> ServerConfig:
         max_tokens=_env_int("AWESOME_CLAUDE_MAX_TOKENS", 4096),
         log_level=os.getenv("AWESOME_CLAUDE_LOG_LEVEL", "INFO"),
         log_dir=os.getenv("AWESOME_CLAUDE_LOG_DIR", "logs"),
+        workspace_dir=Path(workspace_dir) if workspace_dir else Path.cwd(),
+        fs_max_read=_env_int("AWESOME_CLAUDE_FS_MAX_READ", 30000),
+        fs_max_write=_env_int("AWESOME_CLAUDE_FS_MAX_WRITE", 100000),
     )
 
 

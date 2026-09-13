@@ -4,7 +4,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-type ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
+from awesome_claude.core.tools.context import ToolContext
+
+type ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
 
 
 @dataclass(frozen=True, slots=True)

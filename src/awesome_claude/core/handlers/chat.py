@@ -57,6 +57,62 @@ def _clip_text(text: str, *, head: int = 100, tail: int = 100) -> tuple[str, boo
     return f"{text[:head]}…[省略 {omitted} 字符]…{text[-tail:]}", True
 
 
+def _clip_message_content(value: object, *, head: int = 100, tail: int = 100) -> object:
+    """裁剪单条消息 content（字符串或内容块列表），返回副本供日志使用。
+
+    递归处理 Anthropic 内容块中的 text / tool_result 长字段，非字符串
+    字段原样保留。
+
+    Args:
+        value: 消息的 content 字段。
+        head: 保留的头部字符数。
+        tail: 保留的尾部字符数。
+
+    Returns:
+        裁剪后的 content 副本。
+    """
+    if isinstance(value, str):
+        return _clip_text(value, head=head, tail=tail)[0]
+    if isinstance(value, list):
+        clipped_blocks: list[object] = []
+        for block in value:
+            if not isinstance(block, dict):
+                clipped_blocks.append(block)
+                continue
+            block_copy = dict(block)
+            for key in ("text", "content"):
+                field = block_copy.get(key)
+                if isinstance(field, str):
+                    block_copy[key] = _clip_text(field, head=head, tail=tail)[0]
+            clipped_blocks.append(block_copy)
+        return clipped_blocks
+    return value
+
+
+def _clip_messages(
+    messages: list[dict[str, Any]], *, head: int = 100, tail: int = 100
+) -> list[dict[str, Any]]:
+    """返回 messages 的日志副本：裁剪其中的长文本与 tool_result 内容。
+
+    Args:
+        messages: 原始消息列表。
+        head: 保留的头部字符数。
+        tail: 保留的尾部字符数。
+
+    Returns:
+        裁剪后的消息列表副本，原列表不被修改。
+    """
+    clipped: list[dict[str, Any]] = []
+    for message in messages:
+        message_copy = dict(message)
+        if "content" in message_copy:
+            message_copy["content"] = _clip_message_content(
+                message_copy["content"], head=head, tail=tail
+            )
+        clipped.append(message_copy)
+    return clipped
+
+
 def _error_code(exc: LLMError) -> int:
     """LLM 异常 → JSON-RPC 错误码。"""
     if isinstance(exc, LLMAuthError):
@@ -146,7 +202,7 @@ async def handle_chat(
                     TaskStage.CONTEXT_BUILT,
                     {
                         "system": event.system,
-                        "messages": event.messages,
+                        "messages": _clip_messages(event.messages),
                         "message_count": len(event.messages),
                         "tools": [t["name"] for t in event.tools]
                         if event.tools
@@ -166,7 +222,7 @@ async def handle_chat(
                 TaskStage.LLM_REQUEST_SENT,
                 {
                     "model": context.config.model,
-                    "messages": event.messages,
+                    "messages": _clip_messages(event.messages),
                 },
                 step_index=event.step_index,
             )
@@ -212,6 +268,7 @@ async def handle_chat(
                 },
             )
         elif isinstance(event, ToolFinished):
+            content, content_truncated = _clip_text(event.content)
             await task_manager.record_stage(
                 task_id,
                 start_time,
@@ -219,7 +276,8 @@ async def handle_chat(
                 {
                     "tool_name": event.tool_name,
                     "is_error": event.is_error,
-                    "content": event.content,
+                    "content": content,
+                    "content_truncated": content_truncated,
                 },
                 step_index=event.step_index,
             )

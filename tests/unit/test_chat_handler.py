@@ -1,5 +1,6 @@
 """core/handlers/chat 处理器测试（mock LLMClient 与 TaskManager）。"""
 
+import json
 import time
 from typing import Any
 
@@ -214,7 +215,7 @@ class TestHandleChat:
         assert tm.failed[0][2] == "RuntimeError"
 
     async def test_max_steps_interruption(self) -> None:
-        async def noop(args: dict[str, Any]) -> str:
+        async def noop(args: dict[str, Any], ctx: Any) -> str:
             return "ok"
 
         tm = FakeTaskManager()
@@ -263,3 +264,67 @@ class TestHandleChat:
             method for method, _ in recorder.sent if method == NOTIFY_CHAT_INTERRUPTED
         ]
         assert len(interrupted) == 1
+
+    async def test_long_tool_result_clipped_in_task_logs(self) -> None:
+        async def emit(args: dict[str, Any], ctx: Any) -> str:
+            return "x" * 300
+
+        tool_events = [
+            ToolUseEndEvent("t1", "emit", {}),
+            DoneEvent(
+                stop_reason=StopReason.TOOL_USE,
+                full_text="",
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "emit",
+                            "input": {},
+                        }
+                    ],
+                },
+            ),
+        ]
+        tm = FakeTaskManager()
+        llm = FakeLLMClient(tool_events)
+        registry = ToolRegistry()
+        registry.register(
+            Tool(name="emit", description="d", input_schema={}, handler=emit)
+        )
+        loop = AgentLoop(llm, registry, max_steps=2)
+
+        recorder = NotificationRecorder()
+        channel = SessionChannel(ConnectionSink(recorder.send), SessionRegistry())
+        context = HandlerContext(
+            task_manager=tm,
+            llm_client=llm,
+            sessions=channel,
+            config=ServerConfig(api_key="k", model="m"),
+            agent_loop=loop,
+        )
+
+        await handle_chat({"message": "hi"}, context)
+
+        tool_done = [
+            (s[2], s[3])
+            for s in tm.stages
+            if s[1] == TaskStage.TOOL_COMPLETED and s[2]["tool_name"] == "emit"
+        ]
+        assert tool_done, "应存在 TOOL_COMPLETED 阶段"
+        for data, _ in tool_done:
+            assert data["content_truncated"] is True
+            assert "省略" in data["content"]
+            assert data["content"].startswith("x" * 100)
+            assert data["content"].endswith("x" * 100)
+            assert len(data["content"]) < 300
+
+        request_step2 = [
+            s[2] for s in tm.stages if s[1] == TaskStage.LLM_REQUEST_SENT and s[3] == 2
+        ]
+        assert request_step2, "应存在 step 2 的 LLM_REQUEST_SENT"
+        clipped = json.dumps(request_step2[0], ensure_ascii=False)
+        assert "省略" in clipped
+        assert ("x" * 300) not in clipped

@@ -4,15 +4,26 @@ import json
 from typing import Any
 
 from awesome_claude.core.tools.base import Tool, ToolResult
+from awesome_claude.core.tools.context import ToolContext
 from awesome_claude.shared.logging.app_logger import get_app_logger
 
 
 class ToolRegistry:
-    """工具注册表，管理 Tool 的注册、查询与执行。"""
+    """工具注册表，管理 Tool 的注册、查询与执行。
 
-    def __init__(self) -> None:
-        """初始化空注册表。"""
+    Registry 持有全局 ToolContext（沙箱根、限额等），执行工具时随
+    handler(args, ctx) 一并注入；构造时未显式提供则使用 ToolContext
+    默认值（workspace_root = 进程 cwd）。
+    """
+
+    def __init__(self, ctx: ToolContext | None = None) -> None:
+        """初始化注册表并绑定执行上下文。
+
+        Args:
+            ctx: 工具执行上下文，缺省时使用 ToolContext() 默认值。
+        """
         self._tools: dict[str, Tool] = {}
+        self._ctx = ctx if ctx is not None else ToolContext()
         self._logger = get_app_logger("core.tools")
 
     def register(self, tool: Tool) -> None:
@@ -74,7 +85,7 @@ class ToolRegistry:
         if tool is None:
             return ToolResult(content=f"未知工具: {name}", is_error=True)
         try:
-            result = await tool.handler(args)
+            result = await tool.handler(args, self._ctx)
         except Exception as exc:
             self._logger.exception("tool execution failed", tool=name)
             return ToolResult(content=f"{type(exc).__name__}: {exc}", is_error=True)

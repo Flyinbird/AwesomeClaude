@@ -82,7 +82,7 @@ class AlwaysToolLLM:
         )
 
 
-async def _noop(args: dict[str, Any]) -> str:
+async def _noop(args: dict[str, Any], ctx: Any) -> str:
     return "ok"
 
 
@@ -107,7 +107,7 @@ class TestAgentLoop:
     async def test_multi_turn_with_tool(self) -> None:
         calls: list[dict[str, Any]] = []
 
-        async def add(args: dict[str, Any]) -> str:
+        async def add(args: dict[str, Any], ctx: Any) -> str:
             calls.append(args)
             return str(args["a"] + args["b"])
 
@@ -165,7 +165,7 @@ class TestAgentLoop:
         ]
 
     async def test_tool_error_is_fed_back_to_llm(self) -> None:
-        async def boom(args: dict[str, Any]) -> str:
+        async def boom(args: dict[str, Any], ctx: Any) -> str:
             raise RuntimeError("boom")
 
         registry = ToolRegistry()
@@ -222,7 +222,7 @@ class TestAgentLoop:
         assert result.messages[1] == {"role": "user", "content": "now"}
 
     async def test_on_step_reports_step_and_tool_events(self) -> None:
-        async def add(args: dict[str, Any]) -> str:
+        async def add(args: dict[str, Any], ctx: Any) -> str:
             return str(args["a"] + args["b"])
 
         registry = ToolRegistry()

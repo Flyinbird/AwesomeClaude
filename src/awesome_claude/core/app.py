@@ -15,7 +15,8 @@ from awesome_claude.core.server.tcp import TCPServer
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.registry import SessionRegistry
 from awesome_claude.core.task.manager import TaskManager
-from awesome_claude.core.tools.builtin import create_time_tool
+from awesome_claude.core.tools.builtin import create_fs_tools, create_time_tool
+from awesome_claude.core.tools.context import ToolContext
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.shared.logging.app_logger import get_app_logger, setup_app_logging
 from awesome_claude.shared.logging.task_tracker import get_task_tracker
@@ -69,8 +70,14 @@ async def run_server(config: ServerConfig | None = None) -> None:
         max_tokens=config.max_tokens,
         base_url=config.base_url,
     )
-    tool_registry = ToolRegistry()
-    tool_registry.register(create_time_tool())
+    tool_context = ToolContext(
+        workspace_root=config.workspace_dir,
+        fs_max_read=config.fs_max_read,
+        fs_max_write=config.fs_max_write,
+    )
+    tool_registry = ToolRegistry(tool_context)
+    for tool in [create_time_tool(), *create_fs_tools()]:
+        tool_registry.register(tool)
     agent_loop = AgentLoop(llm_client, tool_registry)
     dispatcher = create_dispatcher()
     session_registry = SessionRegistry()
