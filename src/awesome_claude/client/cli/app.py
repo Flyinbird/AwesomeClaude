@@ -33,6 +33,23 @@ HELP_TEXT = """可用命令:
 WELCOME_TEXT = "已连接。输入文本聊天，/help 查看命令，/quit 退出。"
 
 
+def _sanitize_input(text: str) -> str:
+    """将终端输入规范化为可安全编码的 UTF-8 文本。
+
+    在 UTF-8 mode 下 stdin 以 surrogateescape 解码，中文等多字节字符
+    在 IME / 粘贴边界被截断时会残留孤立代理字符（如 ``"\\udce5"``）。
+    这类字符无法再次编码为合法 UTF-8，会导致 JSON 请求编码失败并让
+    客户端崩溃。此处将所有代理码位替换为 Unicode 替换字符 U+FFFD。
+
+    Args:
+        text: ``input()`` 返回的原始行。
+
+    Returns:
+        不含代理码位、可安全编码为 UTF-8 的字符串。
+    """
+    return "".join("\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in text)
+
+
 class CLIApp:
     """CLI 应用。"""
 
@@ -72,6 +89,7 @@ class CLIApp:
                 except (EOFError, KeyboardInterrupt):
                     print()
                     break
+                line = _sanitize_input(line)
                 if not await self._process_line(line, conn):
                     break
         finally:

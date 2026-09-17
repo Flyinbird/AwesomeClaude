@@ -195,9 +195,10 @@ def encode_message(msg: dict[str, Any]) -> bytes:
         msg: 待序列化的消息字典。
 
     Returns:
-        UTF-8 JSON 字节流。
+        UTF-8 JSON 字节流。无法编码的孤立代理字符会被替换为 ``?``，
+        保证任何输入都不会让编码抛错（如终端 surrogateescape 残留）。
     """
-    return json.dumps(msg, ensure_ascii=False).encode("utf-8") + b"\n"
+    return json.dumps(msg, ensure_ascii=False).encode("utf-8", "replace") + b"\n"
 
 
 def decode_message(data: bytes) -> dict[str, Any]:

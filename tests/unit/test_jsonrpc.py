@@ -327,6 +327,12 @@ class TestCodec:
         raw = encode_message(build_request("echo", params={"msg": "你好"}))
         assert "你好".encode() in raw
 
+    def test_encode_lone_surrogate_does_not_raise(self) -> None:
+        raw = encode_message(build_request("echo", params={"msg": "hi\udce5"}))
+        assert raw.endswith(b"\n")
+        decoded = decode_message(raw)
+        assert decoded["params"]["msg"] == "hi?"
+
     def test_decode_message(self) -> None:
         raw = b'{"jsonrpc": "2.0", "method": "echo", "id": 1}\n'
         assert decode_message(raw) == {"jsonrpc": "2.0", "method": "echo", "id": 1}

@@ -1,7 +1,27 @@
 """客户端 CLI 命令解析与渲染器测试。"""
 
+from awesome_claude.client.cli.app import _sanitize_input
 from awesome_claude.client.cli.commands import parse_command
 from awesome_claude.client.cli.renderer import StreamRenderer
+
+
+class TestSanitizeInput:
+    """_sanitize_input 代理字符清理测试。"""
+
+    def test_valid_text_unchanged(self) -> None:
+        text = "帮忙在本项目创建一个 Springboot 框架"
+        assert _sanitize_input(text) == text
+
+    def test_replaces_lone_surrogate(self) -> None:
+        dirty = "帮忙\udce5测试"
+        clean = _sanitize_input(dirty)
+        assert clean == "帮忙\ufffd测试"
+        clean.encode("utf-8")
+
+    def test_replaces_all_surrogates(self) -> None:
+        clean = _sanitize_input("\ud800\udc00\udce5")
+        assert all(not (0xD800 <= ord(ch) <= 0xDFFF) for ch in clean)
+        clean.encode("utf-8")
 
 
 class TestParseCommand:
