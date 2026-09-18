@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from awesome_claude.core.tools.base import Tool, ToolResult
-from awesome_claude.core.tools.context import ToolContext
+from awesome_claude.core.tools.context import ToolContext, ToolScope
 from awesome_claude.shared.logging.app_logger import get_app_logger
 
 
@@ -68,7 +68,9 @@ class ToolRegistry:
             for t in self._tools.values()
         ]
 
-    async def execute(self, name: str, args: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self, name: str, args: dict[str, Any], scope: ToolScope | None = None
+    ) -> ToolResult:
         """执行指定工具。
 
         工具未注册或执行抛异常时返回 is_error=True 的 ToolResult，
@@ -77,6 +79,7 @@ class ToolRegistry:
         Args:
             name: 工具名。
             args: 工具参数。
+            scope: 本次 Run 的运行态作用域（可选）。
 
         Returns:
             工具执行结果。
@@ -85,7 +88,7 @@ class ToolRegistry:
         if tool is None:
             return ToolResult(content=f"未知工具: {name}", is_error=True)
         try:
-            result = await tool.handler(args, self._ctx)
+            result = await tool.handler(args, self._ctx, scope)
         except Exception as exc:
             self._logger.exception("tool execution failed", tool=name)
             return ToolResult(content=f"{type(exc).__name__}: {exc}", is_error=True)

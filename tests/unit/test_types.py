@@ -7,36 +7,41 @@ from awesome_claude.shared.types import (
     ChatResponse,
     StopReason,
     StreamChunk,
-    TaskEvent,
-    TaskStage,
     TokenUsage,
+    TraceEvent,
+    TraceStage,
 )
 
 
-class TestTaskStage:
-    """TaskStage 枚举测试。"""
+class TestTraceStage:
+    """TraceStage 枚举测试。"""
 
     def test_values(self) -> None:
-        assert TaskStage.TASK_CREATED.value == "task_created"
-        assert TaskStage.CONTEXT_BUILT.value == "context_built"
-        assert TaskStage.STEP_STARTED.value == "step_started"
-        assert TaskStage.LLM_REQUEST_SENT.value == "llm_request_sent"
-        assert TaskStage.LLM_STREAMING.value == "llm_streaming"
-        assert TaskStage.LLM_RESPONSE_DONE.value == "llm_response_done"
-        assert TaskStage.TOOL_STARTED.value == "tool_started"
-        assert TaskStage.TOOL_COMPLETED.value == "tool_completed"
-        assert TaskStage.TOOL_FAILED.value == "tool_failed"
-        assert TaskStage.TASK_COMPLETED.value == "task_completed"
-        assert TaskStage.TASK_FAILED.value == "task_failed"
-        assert TaskStage.TASK_INTERRUPTED.value == "task_interrupted"
-        assert TaskStage.TASK_CANCELLED.value == "task_cancelled"
+        assert TraceStage.RUN_CREATED.value == "run_created"
+        assert TraceStage.CONTEXT_BUILT.value == "context_built"
+        assert TraceStage.STEP_STARTED.value == "step_started"
+        assert TraceStage.LLM_REQUEST_SENT.value == "llm_request_sent"
+        assert TraceStage.LLM_STREAMING.value == "llm_streaming"
+        assert TraceStage.LLM_RESPONSE_DONE.value == "llm_response_done"
+        assert TraceStage.TOOL_STARTED.value == "tool_started"
+        assert TraceStage.TOOL_COMPLETED.value == "tool_completed"
+        assert TraceStage.TOOL_FAILED.value == "tool_failed"
+        assert TraceStage.TASK_ADDED.value == "task_added"
+        assert TraceStage.TASK_STARTED.value == "task_started"
+        assert TraceStage.TASK_COMPLETED.value == "task_completed"
+        assert TraceStage.TASK_REOPENED.value == "task_reopened"
+        assert TraceStage.TASK_SUSPENDED.value == "task_suspended"
+        assert TraceStage.RUN_COMPLETED.value == "run_completed"
+        assert TraceStage.RUN_FAILED.value == "run_failed"
+        assert TraceStage.RUN_INTERRUPTED.value == "run_interrupted"
+        assert TraceStage.RUN_CANCELLED.value == "run_cancelled"
 
     def test_member_count(self) -> None:
-        assert len(TaskStage) == 13
+        assert len(TraceStage) == 18
 
     def test_is_str_enum(self) -> None:
-        assert isinstance(TaskStage.TASK_CREATED, str)
-        assert str(TaskStage.TASK_CREATED) == "task_created"
+        assert isinstance(TraceStage.RUN_CREATED, str)
+        assert str(TraceStage.RUN_CREATED) == "run_created"
 
 
 class TestStopReason:
@@ -56,28 +61,28 @@ class TestStopReason:
         assert StopReason.MAX_STEPS == "max_steps"
 
 
-class TestTaskEvent:
-    """TaskEvent dataclass 测试。"""
+class TestTraceEvent:
+    """TraceEvent dataclass 测试。"""
 
     def test_creation(self) -> None:
-        event = TaskEvent(
-            task_id="t1",
-            stage=TaskStage.TASK_CREATED,
+        event = TraceEvent(
+            run_id="t1",
+            stage=TraceStage.RUN_CREATED,
             timestamp="2026-08-27T00:00:00+00:00",
             duration_ms=1.5,
             data={"k": "v"},
         )
-        assert event.task_id == "t1"
-        assert event.stage is TaskStage.TASK_CREATED
+        assert event.run_id == "t1"
+        assert event.stage is TraceStage.RUN_CREATED
         assert event.timestamp == "2026-08-27T00:00:00+00:00"
         assert event.duration_ms == 1.5
         assert event.data == {"k": "v"}
         assert event.step_index is None
 
     def test_step_index(self) -> None:
-        event = TaskEvent(
-            task_id="t1",
-            stage=TaskStage.LLM_RESPONSE_DONE,
+        event = TraceEvent(
+            run_id="t1",
+            stage=TraceStage.LLM_RESPONSE_DONE,
             timestamp="2026-08-27T00:00:00+00:00",
             duration_ms=1.5,
             data={},
@@ -86,16 +91,16 @@ class TestTaskEvent:
         assert event.step_index == 2
 
     def test_serialization_to_json(self) -> None:
-        event = TaskEvent(
-            task_id="t1",
-            stage=TaskStage.TASK_CREATED,
+        event = TraceEvent(
+            run_id="t1",
+            stage=TraceStage.RUN_CREATED,
             timestamp="2026-08-27T00:00:00+00:00",
             duration_ms=1.5,
             data={"k": "v"},
         )
         obj = json.loads(json.dumps(asdict(event), ensure_ascii=False))
-        assert obj["task_id"] == "t1"
-        assert obj["stage"] == "task_created"
+        assert obj["run_id"] == "t1"
+        assert obj["stage"] == "run_created"
         assert obj["timestamp"] == "2026-08-27T00:00:00+00:00"
         assert obj["duration_ms"] == 1.5
         assert obj["data"] == {"k": "v"}
@@ -105,14 +110,14 @@ class TestStreamChunk:
     """StreamChunk dataclass 测试。"""
 
     def test_creation(self) -> None:
-        chunk = StreamChunk(task_id="t1", chunk_index=0, text="hello", is_final=False)
-        assert chunk.task_id == "t1"
+        chunk = StreamChunk(run_id="t1", chunk_index=0, text="hello", is_final=False)
+        assert chunk.run_id == "t1"
         assert chunk.chunk_index == 0
         assert chunk.text == "hello"
         assert not chunk.is_final
 
     def test_final_chunk(self) -> None:
-        chunk = StreamChunk(task_id="t1", chunk_index=1, text="", is_final=True)
+        chunk = StreamChunk(run_id="t1", chunk_index=1, text="", is_final=True)
         assert chunk.is_final
         assert chunk.text == ""
 
@@ -144,14 +149,14 @@ class TestChatResponse:
     def test_creation(self) -> None:
         usage = TokenUsage(input_tokens=10, output_tokens=20)
         resp = ChatResponse(
-            task_id="t1",
+            run_id="t1",
             text="hello",
             stop_reason=StopReason.END_TURN,
             usage=usage,
             duration_ms=100.0,
             model="claude-sonnet-4-20250514",
         )
-        assert resp.task_id == "t1"
+        assert resp.run_id == "t1"
         assert resp.text == "hello"
         assert resp.stop_reason == "end_turn"
         assert resp.usage is usage
@@ -161,7 +166,7 @@ class TestChatResponse:
     def test_serialization_to_json(self) -> None:
         usage = TokenUsage(input_tokens=10, output_tokens=20)
         resp = ChatResponse(
-            task_id="t1",
+            run_id="t1",
             text="hello",
             stop_reason=StopReason.END_TURN,
             usage=usage,
@@ -169,7 +174,7 @@ class TestChatResponse:
             model="m",
         )
         obj = json.loads(json.dumps(asdict(resp)))
-        assert obj["task_id"] == "t1"
+        assert obj["run_id"] == "t1"
         assert obj["text"] == "hello"
         assert obj["stop_reason"] == "end_turn"
         assert obj["usage"]["input_tokens"] == 10

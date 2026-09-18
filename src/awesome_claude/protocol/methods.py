@@ -12,6 +12,7 @@ __all__ = [
     "METHOD_SESSION_DETACH",
     "METHOD_SHUTDOWN",
     "NOTIFY_CHAT_INTERRUPTED",
+    "NOTIFY_CHAT_PLAN_UPDATED",
     "NOTIFY_CHAT_STREAM",
     "NOTIFY_CHAT_TOOL_FINISHED",
     "NOTIFY_CHAT_TOOL_STARTED",
@@ -24,6 +25,8 @@ __all__ = [
     "Method",
     "PingParams",
     "PingResult",
+    "PlanTaskSnapshot",
+    "PlanUpdatedNotificationParams",
     "SessionAttachParams",
     "SessionAttachResult",
     "ShutdownParams",
@@ -49,6 +52,7 @@ NOTIFY_CHAT_USER_MESSAGE: str = "chat.user_message"
 NOTIFY_CHAT_TOOL_STARTED: str = "chat.tool_started"
 NOTIFY_CHAT_TOOL_FINISHED: str = "chat.tool_finished"
 NOTIFY_CHAT_INTERRUPTED: str = "chat.interrupted"
+NOTIFY_CHAT_PLAN_UPDATED: str = "chat.plan_updated"
 
 
 class PingParams(TypedDict):
@@ -98,13 +102,13 @@ class SessionAttachResult(TypedDict):
 
     session_id: str
     history: list[dict[str, object]]
-    active_tasks: list[str]
+    active_runs: list[str]
 
 
 class StreamNotificationParams(TypedDict):
     """chat.stream 流式通知参数（Server → Client 推送）。"""
 
-    task_id: str
+    run_id: str
     chunk_index: int
     text: str
     is_final: bool
@@ -122,7 +126,7 @@ class ToolStartedNotificationParams(TypedDict):
     """chat.tool_started 通知参数（工具调用开始）。"""
 
     session_id: NotRequired[str | None]
-    task_id: str
+    run_id: str
     step_index: int
     tool_name: str
     args: dict[str, object]
@@ -132,16 +136,34 @@ class ToolFinishedNotificationParams(TypedDict):
     """chat.tool_finished 通知参数（工具调用结束）。"""
 
     session_id: NotRequired[str | None]
-    task_id: str
+    run_id: str
     step_index: int
     tool_name: str
     is_error: bool
 
 
 class InterruptedNotificationParams(TypedDict):
-    """chat.interrupted 通知参数（达到最大步数，任务未完整完成）。"""
+    """chat.interrupted 通知参数（达到最大步数，Run 未完整完成）。"""
 
     session_id: NotRequired[str | None]
-    task_id: str
+    run_id: str
     stop_reason: str
     step_index: int
+
+
+class PlanTaskSnapshot(TypedDict):
+    """计划快照中的单个任务。"""
+
+    id: str
+    goal: str
+    status: str
+    deps: list[str]
+    attempts: int
+
+
+class PlanUpdatedNotificationParams(TypedDict):
+    """chat.plan_updated 通知参数（任务清单与状态快照）。"""
+
+    run_id: str
+    session_id: NotRequired[str | None]
+    tasks: list[PlanTaskSnapshot]

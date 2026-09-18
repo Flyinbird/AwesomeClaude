@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from awesome_claude.core.observability.trace_recorder import TraceRecorder
     from awesome_claude.core.session.registry import ConnectionSink
 
 
@@ -59,6 +60,7 @@ class Run:
         start_time: float,
         *,
         initiator: RunInitiator | None = None,
+        recorder: "TraceRecorder | None" = None,
     ) -> None:
         """初始化 Run（状态为 RUNNING）。
 
@@ -67,6 +69,7 @@ class Run:
             session_id: 所属会话标识。
             start_time: 单调时钟起点，用于计算持续时间。
             initiator: 发起方信息（可选）。
+            recorder: 绑定本次 Run 的轨迹记录器（可选）。
         """
         self.run_id = run_id
         self.session_id = session_id
@@ -74,6 +77,7 @@ class Run:
         self.state: RunState = RunState.RUNNING
         self.task: asyncio.Task[Any] | None = None
         self.initiator = initiator
+        self.recorder = recorder
 
     @property
     def is_active(self) -> bool:

@@ -22,7 +22,7 @@ async def handle_session_attach(
         context: 运行时上下文。
 
     Returns:
-        会话回放状态（session_id、history、active_tasks），或错误响应。
+        会话回放状态（session_id、history、active_runs），或错误响应。
     """
     if params is None or not isinstance(params, dict) or "session_id" not in params:
         return build_error_response(

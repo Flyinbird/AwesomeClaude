@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from awesome_claude.core.tools.base import Tool
-from awesome_claude.core.tools.context import ToolContext
+from awesome_claude.core.tools.context import ToolContext, ToolScope
 
 _MARK_TRUNCATED = "\n…[内容过长，已省略 {omitted} 字节以控制上下文]…"
 
@@ -131,7 +131,9 @@ def _read_file(
     }
 
 
-async def _read_file_handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+async def _read_file_handler(
+    args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+) -> dict[str, Any]:
     """读取文本文件。参数 path 必填，offset/limit 可选。"""
     offset = args.get("offset", 0)
     limit = args.get("limit")
@@ -172,7 +174,9 @@ def _write_bytes_guarded(target: Path, content: str, max_write: int) -> dict[str
     return {"path": str(target), "bytes": len(data)}
 
 
-async def _write_file_handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+async def _write_file_handler(
+    args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+) -> dict[str, Any]:
     """写入文本文件（覆盖已存在文件）。参数 path、content 必填。"""
     content = args.get("content")
     if not isinstance(content, str):
@@ -183,7 +187,9 @@ async def _write_file_handler(args: dict[str, Any], ctx: ToolContext) -> dict[st
     )
 
 
-async def _edit_file_handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+async def _edit_file_handler(
+    args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+) -> dict[str, Any]:
     """精确字符串替换；old_string 必须在文件中唯一出现。"""
     old_string = args.get("old_string")
     new_string = args.get("new_string")
@@ -211,7 +217,9 @@ async def _edit_file_handler(args: dict[str, Any], ctx: ToolContext) -> dict[str
     return await asyncio.to_thread(_edit)
 
 
-async def _list_dir_handler(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+async def _list_dir_handler(
+    args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+) -> dict[str, Any]:
     """列出目录条目；path 省略或为空时默认工作区根目录。"""
     raw = args.get("path")
     if raw is not None and not isinstance(raw, str):

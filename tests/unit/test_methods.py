@@ -55,19 +55,19 @@ class TestStreamNotificationParams:
 
     def test_creation(self) -> None:
         params: StreamNotificationParams = {
-            "task_id": "t1",
+            "run_id": "t1",
             "chunk_index": 0,
             "text": "增量文本",
             "is_final": False,
         }
-        assert params["task_id"] == "t1"
+        assert params["run_id"] == "t1"
         assert params["chunk_index"] == 0
         assert params["text"] == "增量文本"
         assert params["is_final"] is False
 
     def test_final_flag(self) -> None:
         params: StreamNotificationParams = {
-            "task_id": "t1",
+            "run_id": "t1",
             "chunk_index": 5,
             "text": "",
             "is_final": True,

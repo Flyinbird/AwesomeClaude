@@ -283,7 +283,7 @@ class AnthropicClient(LLMProvider):
                 usage = event.usage
         duration_ms = (time.perf_counter() - start) * 1000.0
         return ChatResponse(
-            task_id=str(uuid.uuid4()),
+            run_id=str(uuid.uuid4()),
             text="".join(text_parts),
             stop_reason=stop_reason,
             usage=usage,

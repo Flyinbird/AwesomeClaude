@@ -38,7 +38,7 @@ def make_context() -> HandlerContext:
 
     channel = SessionChannel(ConnectionSink(MagicMock()), SessionRegistry())
     return HandlerContext(
-        task_manager=MagicMock(),
+        trace_store=MagicMock(),
         llm_client=MagicMock(),
         sessions=channel,
         config=ServerConfig(api_key="k", host="127.0.0.1", port=0),

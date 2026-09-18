@@ -15,7 +15,6 @@ from awesome_claude.core.server.tcp import TCPServer
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.registry import SessionRegistry
 from awesome_claude.core.session.run import RunState
-from awesome_claude.core.task.manager import TaskManager
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.errors import SESSION_BUSY
 from awesome_claude.protocol.jsonrpc import (
@@ -24,7 +23,7 @@ from awesome_claude.protocol.jsonrpc import (
     encode_message,
 )
 from awesome_claude.protocol.methods import METHOD_CHAT, METHOD_PING
-from awesome_claude.shared.logging.task_tracker import TaskTracker
+from awesome_claude.shared.logging.trace_store import TraceStore
 from awesome_claude.shared.types import TokenUsage
 
 
@@ -76,15 +75,14 @@ class SlowWriter:
 async def _build_server(
     tmp_path: Path, llm: Any
 ) -> tuple[TCPServer, Path, SessionRegistry]:
-    tasks_dir = tmp_path / "tasks"
-    tracker = TaskTracker(str(tasks_dir))
-    task_manager = TaskManager(tracker)
+    runs_dir = tmp_path / "runs"
+    trace_store = TraceStore(str(runs_dir))
     config = ServerConfig(api_key="k", model="m", host="127.0.0.1", port=0)
-    registry = SessionRegistry(task_manager)
+    registry = SessionRegistry()
 
     def context_factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(
-            task_manager=task_manager,
+            trace_store=trace_store,
             llm_client=llm,
             sessions=channel,
             config=config,
@@ -95,7 +93,7 @@ async def _build_server(
         config.host, config.port, create_dispatcher(), context_factory, registry
     )
     await server.start()
-    return server, tasks_dir, registry
+    return server, runs_dir, registry
 
 
 async def _read_until_response(
@@ -140,9 +138,9 @@ async def _wait_for(predicate: Any, timeout: float = 2.0) -> None:
     raise AssertionError("等待条件超时")
 
 
-def _read_events(tasks_dir: Path) -> list[dict[str, Any]]:
+def _read_events(runs_dir: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for path in tasks_dir.glob("*/*.jsonl"):
+    for path in runs_dir.glob("*/*.jsonl"):
         events.extend(
             json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
         )
@@ -188,7 +186,7 @@ class TestDisconnectCancellation:
         self, tmp_path: Path
     ) -> None:
         llm = GatedLLM()
-        server, tasks_dir, registry = await _build_server(tmp_path, llm)
+        server, runs_dir, registry = await _build_server(tmp_path, llm)
         reader, writer = await asyncio.open_connection(*server.bound_addr)
         try:
             writer.write(
@@ -225,11 +223,9 @@ class TestDisconnectCancellation:
         assert session.history == []
 
         await _wait_for(
-            lambda: any(e["stage"] == "task_cancelled" for e in _read_events(tasks_dir))
+            lambda: any(e["stage"] == "run_cancelled" for e in _read_events(runs_dir))
         )
-        cancelled = [
-            e for e in _read_events(tasks_dir) if e["stage"] == "task_cancelled"
-        ]
+        cancelled = [e for e in _read_events(runs_dir) if e["stage"] == "run_cancelled"]
         assert len(cancelled) == 1
 
         await server.stop()
@@ -407,7 +403,7 @@ class TestSessionBusy:
             await w2.drain()
             attach = await _read_until_response(r2, 1)
             assert attach is not None
-            assert run_id in attach["result"]["active_tasks"]
+            assert run_id in attach["result"]["active_runs"]
 
             llm.release.set()
             assert await _read_until_response(r1, 2) is not None
@@ -511,7 +507,7 @@ class TestServerShutdown:
 
     async def test_stop_cancels_inflight_run(self, tmp_path: Path) -> None:
         llm = GatedLLM()
-        server, tasks_dir, registry = await _build_server(tmp_path, llm)
+        server, runs_dir, registry = await _build_server(tmp_path, llm)
         reader, writer = await asyncio.open_connection(*server.bound_addr)
         writer.write(
             encode_message(build_request("session.attach", {"session_id": "s"}, 1))
@@ -537,7 +533,7 @@ class TestServerShutdown:
         assert run.state is RunState.CANCELLED
         assert run.task is not None and run.task.done()
         assert session.active_run is None
-        assert any(e["stage"] == "task_cancelled" for e in _read_events(tasks_dir))
+        assert any(e["stage"] == "run_cancelled" for e in _read_events(runs_dir))
         writer.close()
 
 

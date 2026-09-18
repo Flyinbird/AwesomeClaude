@@ -12,7 +12,6 @@ from awesome_claude.core.router.dispatcher import create_dispatcher
 from awesome_claude.core.server.tcp import TCPServer
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.registry import SessionRegistry
-from awesome_claude.core.task.manager import TaskManager
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.jsonrpc import (
     build_request,
@@ -27,7 +26,7 @@ from awesome_claude.protocol.methods import (
     METHOD_SHUTDOWN,
     NOTIFY_CHAT_STREAM,
 )
-from awesome_claude.shared.logging.task_tracker import TaskTracker
+from awesome_claude.shared.logging.trace_store import TraceStore
 from awesome_claude.shared.types import TokenUsage
 from tests.conftest import RpcTestClient
 
@@ -45,15 +44,14 @@ class FakeLLM:
 
 def build_server(tmp_path: Path, llm: Any) -> TCPServer:
     """构建新架构 TCPServer。"""
-    tracker = TaskTracker(str(tmp_path / "tasks"))
-    task_manager = TaskManager(tracker)
+    trace_store = TraceStore(str(tmp_path / "runs"))
     dispatcher = create_dispatcher()
     config = ServerConfig(api_key="k", model="m", host="127.0.0.1", port=0)
-    registry = SessionRegistry(task_manager)
+    registry = SessionRegistry()
 
     def context_factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(
-            task_manager=task_manager,
+            trace_store=trace_store,
             llm_client=llm,
             sessions=channel,
             config=config,
@@ -141,7 +139,7 @@ async def test_e2e_chat_streams_notifications(tmp_path: Path) -> None:
         assert response["result"]["text"] == "Hello world!"
         assert response["result"]["stop_reason"] == "end_turn"
         assert response["result"]["usage"]["input_tokens"] == 12
-        assert response["result"]["task_id"]
+        assert response["result"]["run_id"]
 
         assert len(notifications) == 4
         assert all(n["method"] == NOTIFY_CHAT_STREAM for n in notifications)

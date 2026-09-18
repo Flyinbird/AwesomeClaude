@@ -97,7 +97,7 @@ class TestBuild:
 
     def test_build_notification_with_dict_params_has_no_id(self) -> None:
         params = {
-            "task_id": "t1",
+            "run_id": "t1",
             "chunk_index": 0,
             "text": "hi",
             "is_final": False,
@@ -146,7 +146,7 @@ class TestParseMessage:
 
     def test_parse_notification_versus_request(self) -> None:
         stream_params = {
-            "task_id": "t1",
+            "run_id": "t1",
             "chunk_index": 1,
             "text": "hi",
             "is_final": False,

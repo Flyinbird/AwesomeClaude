@@ -76,7 +76,7 @@ class TestStreamRenderer:
         renderer = StreamRenderer()
         renderer.render_summary(
             {
-                "task_id": "abc12345",
+                "run_id": "abc12345",
                 "text": "hi",
                 "usage": {"input_tokens": 10, "output_tokens": 20},
                 "duration_ms": 123.4,
@@ -86,7 +86,7 @@ class TestStreamRenderer:
         out = capsys.readouterr().out
         assert "tokens: 10 in / 20 out" in out
         assert "123ms | model: m" in out
-        assert "task: abc12345" in out
+        assert "run: abc12345" in out
 
     def test_render_summary_missing_fields(self, capsys) -> None:
         renderer = StreamRenderer()

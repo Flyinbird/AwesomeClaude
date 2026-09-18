@@ -4,15 +4,18 @@ import time
 from typing import Any
 
 from awesome_claude.core.tools.base import Tool
-from awesome_claude.core.tools.context import ToolContext
+from awesome_claude.core.tools.context import ToolContext, ToolScope
 
 
-async def _get_time(args: dict[str, Any], ctx: ToolContext) -> str:
+async def _get_time(
+    args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+) -> str:
     """返回当前服务器本地时间字符串。
 
     Args:
         args: 工具参数（未使用）。
-        ctx: 工具执行上下文（未使用）。
+        ctx: 进程级工具执行环境（未使用）。
+        scope: per-Run 运行态（未使用）。
 
     Returns:
         本地时间字符串，格式 YYYY-MM-DD HH:MM:SS。

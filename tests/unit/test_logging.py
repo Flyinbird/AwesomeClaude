@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from awesome_claude.shared.logging.app_logger import get_app_logger, setup_app_logging
-from awesome_claude.shared.logging.task_tracker import TaskTracker, get_task_tracker
-from awesome_claude.shared.types import TaskStage
+from awesome_claude.shared.logging.trace_store import TraceStore, get_trace_store
+from awesome_claude.shared.types import TraceStage
 
 
 def _flush_all_handlers() -> None:
@@ -63,62 +63,60 @@ class TestAppLogger:
         assert logger is not None
 
 
-class TestTaskTracker:
-    """task_tracker JSONL 写入测试。"""
+class TestTraceStore:
+    """trace_store JSONL 写入测试。"""
 
     async def test_write_jsonl(self, tmp_path: Path) -> None:
-        tracker = TaskTracker(str(tmp_path))
+        tracker = TraceStore(str(tmp_path))
         await tracker.log_event(
-            "task-1",
-            TaskStage.TASK_CREATED,
+            "run-1",
+            TraceStage.RUN_CREATED,
             {"k": "v"},
             start_time=time.monotonic() - 0.1,
         )
-        await tracker.log_event(
-            "task-1", TaskStage.TASK_COMPLETED, {}, time.monotonic()
-        )
+        await tracker.log_event("run-1", TraceStage.RUN_COMPLETED, {}, time.monotonic())
 
         date_dir = datetime.now(UTC).strftime("%Y-%m-%d")
-        path = tmp_path / date_dir / "task-1.jsonl"
+        path = tmp_path / date_dir / "run-1.jsonl"
         assert path.exists()
         lines = path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 2
 
         first = json.loads(lines[0])
-        assert first["task_id"] == "task-1"
-        assert first["stage"] == "task_created"
+        assert first["run_id"] == "run-1"
+        assert first["stage"] == "run_created"
         assert first["timestamp"]
         assert first["duration_ms"] > 0
         assert first["data"] == {"k": "v"}
 
         second = json.loads(lines[1])
-        assert second["stage"] == "task_completed"
+        assert second["stage"] == "run_completed"
 
-    async def test_each_task_own_file(self, tmp_path: Path) -> None:
-        tracker = TaskTracker(str(tmp_path))
-        await tracker.log_event("task-1", TaskStage.TASK_CREATED, {}, time.monotonic())
-        await tracker.log_event("task-2", TaskStage.TASK_CREATED, {}, time.monotonic())
+    async def test_each_run_own_file(self, tmp_path: Path) -> None:
+        tracker = TraceStore(str(tmp_path))
+        await tracker.log_event("run-1", TraceStage.RUN_CREATED, {}, time.monotonic())
+        await tracker.log_event("run-2", TraceStage.RUN_CREATED, {}, time.monotonic())
         date_dir = datetime.now(UTC).strftime("%Y-%m-%d")
-        assert (tmp_path / date_dir / "task-1.jsonl").exists()
-        assert (tmp_path / date_dir / "task-2.jsonl").exists()
+        assert (tmp_path / date_dir / "run-1.jsonl").exists()
+        assert (tmp_path / date_dir / "run-2.jsonl").exists()
 
     async def test_concurrent_writes_same_file(self, tmp_path: Path) -> None:
-        tracker = TaskTracker(str(tmp_path))
+        tracker = TraceStore(str(tmp_path))
         start = time.monotonic()
         await asyncio.gather(
             *(
-                tracker.log_event("task-x", TaskStage.LLM_STREAMING, {"i": i}, start)
+                tracker.log_event("run-x", TraceStage.LLM_STREAMING, {"i": i}, start)
                 for i in range(50)
             )
         )
         date_dir = datetime.now(UTC).strftime("%Y-%m-%d")
-        path = tmp_path / date_dir / "task-x.jsonl"
+        path = tmp_path / date_dir / "run-x.jsonl"
         assert path.exists()
         lines = path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 50
         indices = {json.loads(line)["data"]["i"] for line in lines}
         assert indices == set(range(50))
 
-    async def test_get_task_tracker_factory(self) -> None:
-        tracker = get_task_tracker()
-        assert isinstance(tracker, TaskTracker)
+    async def test_get_trace_store_factory(self) -> None:
+        tracker = get_trace_store()
+        assert isinstance(tracker, TraceStore)

@@ -7,14 +7,14 @@ from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.llm.base import LLMProvider
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.run import Run
-from awesome_claude.core.task.manager import TaskManager
+from awesome_claude.shared.logging.trace_store import TraceStore
 
 
 @dataclass(slots=True)
 class HandlerContext:
     """传递给 handler 的运行时上下文。"""
 
-    task_manager: TaskManager
+    trace_store: TraceStore
     llm_client: LLMProvider
     sessions: SessionChannel
     config: ServerConfig

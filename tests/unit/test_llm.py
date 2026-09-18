@@ -287,7 +287,7 @@ class TestChat:
         assert resp.usage.output_tokens == 7
         assert resp.model == "test-model"
         assert resp.duration_ms >= 0
-        assert resp.task_id
+        assert resp.run_id
         await client.close()
 
     async def test_close_closes_underlying_client(self) -> None:

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
+from awesome_claude.core.observability.trace_recorder import TraceRecorder
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import Dispatcher
 from awesome_claude.core.session.channel import SessionChannel
@@ -194,25 +195,27 @@ class ClientSession:
             )
             return
 
-        task_id = uuid.uuid4().hex[:8]
+        run_id = uuid.uuid4().hex[:8]
         start_time = time.monotonic()
+        recorder = TraceRecorder(context.trace_store, run_id, start_time)
         run = Run(
-            run_id=task_id,
+            run_id=run_id,
             session_id=session_id,
             start_time=start_time,
             initiator=RunInitiator(request_id=parsed.id, sink=self._sink),
+            recorder=recorder,
         )
         session.active_run = run
 
         try:
-            await context.task_manager.create_task(
-                str(params["message"]),
-                client_addr=str(self._addr),
-                task_id=task_id,
-                start_time=start_time,
+            await recorder.run_created(
+                {
+                    "user_input": str(params["message"]),
+                    "client_addr": str(self._addr),
+                }
             )
         except Exception:
-            self._logger.exception("create task failed")
+            self._logger.exception("create trace recorder failed")
             if session.active_run is run:
                 session.active_run = None
             if session.ephemeral:

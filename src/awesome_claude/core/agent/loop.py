@@ -19,6 +19,7 @@ from awesome_claude.core.llm.events import (
     TextDeltaEvent,
     ToolUseEndEvent,
 )
+from awesome_claude.core.tools.context import ToolScope
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.shared.types import StopReason, TokenUsage
 
@@ -85,6 +86,7 @@ class AgentLoop:
         history: list[dict[str, Any]] | None = None,
         on_event: EventHandler | None = None,
         on_step: StepHandler | None = None,
+        scope: ToolScope | None = None,
     ) -> AgentResult:
         """运行 agent 循环。
 
@@ -94,6 +96,7 @@ class AgentLoop:
             history: 前置对话历史（可选，不含本轮 user 消息）。
             on_event: LLM 流式事件回调（可选）。
             on_step: step/tool 结构事件回调（可选）。
+            scope: 本次 Run 的运行态作用域，随工具执行注入（可选）。
 
         Returns:
             最终结果（文本、完整消息历史、累计用量、步数、停止原因）。
@@ -124,7 +127,11 @@ class AgentLoop:
                 )
 
             outcome = await self._chat_once(
-                messages, system=system, tools=tools_param, on_event=on_event
+                messages,
+                system=system,
+                tools=tools_param,
+                on_event=on_event,
+                scope=scope,
             )
 
             if outcome.message is not None:
@@ -160,7 +167,9 @@ class AgentLoop:
                             args=tool_use["input"],
                         )
                     )
-                result = await self._tools.execute(tool_use["name"], tool_use["input"])
+                result = await self._tools.execute(
+                    tool_use["name"], tool_use["input"], scope
+                )
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -197,6 +206,7 @@ class AgentLoop:
                     system=self._finalize_system(system),
                     tools=None,
                     on_event=on_event,
+                    scope=scope,
                 )
                 if outcome.message is not None:
                     messages.append(outcome.message)
@@ -231,6 +241,7 @@ class AgentLoop:
         system: str | None,
         tools: list[dict[str, Any]] | None,
         on_event: EventHandler | None,
+        scope: ToolScope | None,
     ) -> _StepOutcome:
         """执行一次 LLM 调用并收集流式事件。
 
@@ -239,6 +250,7 @@ class AgentLoop:
             system: 系统提示（可选）。
             tools: Anthropic 格式的工具 schema 列表（可选）。
             on_event: LLM 流式事件回调（可选）。
+            scope: 本次 Run 的运行态作用域（可选）。
 
         Returns:
             本轮的结构化结果（文本、工具调用、assistant message、

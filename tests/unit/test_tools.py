@@ -4,11 +4,13 @@ from pathlib import Path
 from typing import Any
 
 from awesome_claude.core.tools.base import Tool, ToolResult
-from awesome_claude.core.tools.context import ToolContext
+from awesome_claude.core.tools.context import ToolContext, ToolScope
 from awesome_claude.core.tools.registry import ToolRegistry
 
 
-async def _echo(args: dict[str, Any], ctx: ToolContext) -> str:
+async def _echo(
+    args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+) -> str:
     """回显 text 参数的测试工具。"""
     return str(args.get("text", ""))
 
@@ -54,7 +56,9 @@ class TestToolRegistry:
         assert result == ToolResult(content="hi")
 
     async def test_execute_serializes_non_string_result(self) -> None:
-        async def number(_: dict[str, Any], ctx: ToolContext) -> int:
+        async def number(
+            _: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+        ) -> int:
             return 42
 
         reg = ToolRegistry()
@@ -70,7 +74,9 @@ class TestToolRegistry:
         assert "nope" in result.content
 
     async def test_execute_handler_exception_is_error(self) -> None:
-        async def boom(_: dict[str, Any], ctx: ToolContext) -> str:
+        async def boom(
+            _: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+        ) -> str:
             raise RuntimeError("boom")
 
         reg = ToolRegistry()
@@ -82,7 +88,9 @@ class TestToolRegistry:
     async def test_execute_injects_registry_context(self, tmp_path: Path) -> None:
         seen: dict[str, object] = {}
 
-        async def probe(args: dict[str, Any], ctx: ToolContext) -> str:
+        async def probe(
+            args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+        ) -> str:
             seen["root"] = ctx.workspace_root
             return "ok"
 

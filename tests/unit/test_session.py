@@ -2,12 +2,10 @@
 
 import asyncio
 from typing import Any
-from unittest.mock import AsyncMock
 
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.registry import ConnectionSink, SessionRegistry
 from awesome_claude.core.session.run import Run, RunState
-from awesome_claude.shared.types import TaskStage
 
 
 class Recorder:
@@ -18,6 +16,16 @@ class Recorder:
 
     async def send(self, method: str, params: dict[str, Any]) -> None:
         self.sent.append((method, params))
+
+
+class FakeRecorder:
+    """记录取消事件的替身轨迹记录器。"""
+
+    def __init__(self) -> None:
+        self.cancelled: list[dict[str, Any]] = []
+
+    async def run_cancelled(self, data: dict[str, Any]) -> None:
+        self.cancelled.append(data)
 
 
 class TestSessionRegistry:
@@ -80,7 +88,7 @@ class TestSessionRegistry:
         state = reg.state("abc")
         assert state["session_id"] == "abc"
         assert state["history"] == [{"role": "user"}]
-        assert state["active_tasks"] == ["t1"]
+        assert state["active_runs"] == ["t1"]
 
     async def test_state_excludes_finished_run(self) -> None:
         reg = SessionRegistry()
@@ -88,14 +96,14 @@ class TestSessionRegistry:
         run = Run("t1", "abc", 0.0)
         run.finish(RunState.COMPLETED)
         session.active_run = run
-        assert reg.state("abc")["active_tasks"] == []
+        assert reg.state("abc")["active_runs"] == []
 
     async def test_state_missing_returns_empty(self) -> None:
         reg = SessionRegistry()
         assert reg.state("nope") == {
             "session_id": "nope",
             "history": [],
-            "active_tasks": [],
+            "active_runs": [],
         }
 
 
@@ -103,11 +111,11 @@ class TestSessionActiveRun:
     """会话在途 Run 与零订阅取消测试。"""
 
     async def test_zero_subscribers_cancels_active_run(self) -> None:
-        tm = AsyncMock()
-        reg = SessionRegistry(tm)
+        reg = SessionRegistry()
         sink = ConnectionSink(Recorder().send)
         session = reg.attach("abc", sink)
-        run = Run("t1", "abc", 0.0)
+        recorder = FakeRecorder()
+        run = Run("t1", "abc", 0.0, recorder=recorder)
         run.set_task(asyncio.create_task(asyncio.Event().wait()))
         session.active_run = run
 
@@ -115,8 +123,7 @@ class TestSessionActiveRun:
 
         assert run.state is RunState.CANCELLED
         assert session.active_run is None
-        tm.record_stage.assert_awaited_once()
-        assert tm.record_stage.await_args.args[2] is TaskStage.TASK_CANCELLED
+        assert recorder.cancelled == [{"session_id": "abc"}]
 
     async def test_other_subscriber_keeps_run(self) -> None:
         reg = SessionRegistry()
@@ -147,8 +154,7 @@ class TestSessionActiveRun:
         assert reg.get("named") is not None
 
     async def test_cancel_all_active_runs(self) -> None:
-        tm = AsyncMock()
-        reg = SessionRegistry(tm)
+        reg = SessionRegistry()
         session = reg.get_or_create("abc")
         run = Run("t1", "abc", 0.0)
         run.set_task(asyncio.create_task(asyncio.Event().wait()))
@@ -217,16 +223,16 @@ class TestSessionChannel:
         reg = SessionRegistry()
         channel = SessionChannel(ConnectionSink(Recorder().send), reg)
         channel.attach("abc")
-        channel.record_turn("hi", "hello", "task1")
+        channel.record_turn("hi", "hello", "run1")
         session = reg.get("abc")
         assert session is not None
         assert session.history == [
-            {"role": "user", "content": "hi", "task_id": "task1"},
-            {"role": "assistant", "content": "hello", "task_id": "task1"},
+            {"role": "user", "content": "hi", "run_id": "run1"},
+            {"role": "assistant", "content": "hello", "run_id": "run1"},
         ]
 
     async def test_record_turn_noop_without_attach(self) -> None:
         reg = SessionRegistry()
         channel = SessionChannel(ConnectionSink(Recorder().send), reg)
-        channel.record_turn("hi", "hello", "task1")
+        channel.record_turn("hi", "hello", "run1")
         assert reg.get("abc") is None

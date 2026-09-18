@@ -1,14 +1,14 @@
-"""共享数据类型 - 任务阶段、停止原因、事件、流式块、用量与对话响应。"""
+"""共享数据类型 - 轨迹阶段、停止原因、事件、流式块、用量与对话响应。"""
 
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
 
-class TaskStage(StrEnum):
-    """任务生命周期阶段。"""
+class TraceStage(StrEnum):
+    """执行轨迹阶段：Run 级（run_*）、任务级（task_*）与轮次级（step / llm / tool）。"""
 
-    TASK_CREATED = "task_created"
+    RUN_CREATED = "run_created"
     CONTEXT_BUILT = "context_built"
     STEP_STARTED = "step_started"
     LLM_REQUEST_SENT = "llm_request_sent"
@@ -17,10 +17,15 @@ class TaskStage(StrEnum):
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
     TOOL_FAILED = "tool_failed"
+    TASK_ADDED = "task_added"
+    TASK_STARTED = "task_started"
     TASK_COMPLETED = "task_completed"
-    TASK_FAILED = "task_failed"
-    TASK_INTERRUPTED = "task_interrupted"
-    TASK_CANCELLED = "task_cancelled"
+    TASK_REOPENED = "task_reopened"
+    TASK_SUSPENDED = "task_suspended"
+    RUN_COMPLETED = "run_completed"
+    RUN_FAILED = "run_failed"
+    RUN_INTERRUPTED = "run_interrupted"
+    RUN_CANCELLED = "run_cancelled"
 
 
 class StopReason(StrEnum):
@@ -55,11 +60,11 @@ class StopReason(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class TaskEvent:
-    """任务生命周期事件。"""
+class TraceEvent:
+    """执行轨迹事件。"""
 
-    task_id: str
-    stage: TaskStage
+    run_id: str
+    stage: TraceStage
     timestamp: str
     duration_ms: float
     data: dict[str, Any]
@@ -70,7 +75,7 @@ class TaskEvent:
 class StreamChunk:
     """LLM 流式输出的单个片段。"""
 
-    task_id: str
+    run_id: str
     chunk_index: int
     text: str
     is_final: bool
@@ -90,7 +95,7 @@ class TokenUsage:
 class ChatResponse:
     """完整的 LLM 对话响应。"""
 
-    task_id: str
+    run_id: str
     text: str
     stop_reason: StopReason
     usage: TokenUsage

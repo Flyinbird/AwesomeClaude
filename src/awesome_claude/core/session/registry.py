@@ -5,9 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from awesome_claude.core.session.run import Run, RunState
-from awesome_claude.core.task.manager import TaskManager
 from awesome_claude.shared.logging.app_logger import get_app_logger
-from awesome_claude.shared.types import TaskStage
 
 type SendFn = Callable[[str, dict[str, Any]], Awaitable[None]]
 
@@ -61,14 +59,9 @@ class Session:
 class SessionRegistry:
     """会话注册表，管理会话的创建、订阅、在途 Run 与广播。"""
 
-    def __init__(self, task_manager: TaskManager | None = None) -> None:
-        """初始化空注册表。
-
-        Args:
-            task_manager: 用于在取消时落地 Run 终态（可选）。
-        """
+    def __init__(self) -> None:
+        """初始化空注册表。"""
         self._sessions: dict[str, Session] = {}
-        self._task_manager = task_manager
         self._logger = get_app_logger("core.session")
 
     def get(self, session_id: str) -> Session | None:
@@ -160,13 +153,8 @@ class SessionRegistry:
             await asyncio.gather(run.task, return_exceptions=True)
         if not run.is_terminal:
             run.finish(RunState.CANCELLED)
-        if run.state is RunState.CANCELLED and self._task_manager is not None:
-            await self._task_manager.record_stage(
-                run.run_id,
-                run.start_time,
-                TaskStage.TASK_CANCELLED,
-                {"session_id": run.session_id},
-            )
+        if run.state is RunState.CANCELLED and run.recorder is not None:
+            await run.recorder.run_cancelled({"session_id": run.session_id})
         session = self._sessions.get(run.session_id)
         if session is not None and session.active_run is run:
             session.active_run = None
@@ -214,17 +202,17 @@ class SessionRegistry:
             session_id: 会话标识。
 
         Returns:
-            含 session_id、history、active_tasks 的状态字典。active_tasks
+            含 session_id、history、active_runs 的状态字典。active_runs
             仅包含当前在途 Run 的标识，已完成/已取消的不出现。
         """
         session = self._sessions.get(session_id)
         if session is None:
-            return {"session_id": session_id, "history": [], "active_tasks": []}
-        active_tasks: list[str] = []
+            return {"session_id": session_id, "history": [], "active_runs": []}
+        active_runs: list[str] = []
         if session.active_run is not None and session.active_run.is_active:
-            active_tasks.append(session.active_run.run_id)
+            active_runs.append(session.active_run.run_id)
         return {
             "session_id": session.session_id,
             "history": list(session.history),
-            "active_tasks": active_tasks,
+            "active_runs": active_runs,
         }

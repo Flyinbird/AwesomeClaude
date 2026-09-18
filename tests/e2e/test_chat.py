@@ -16,7 +16,6 @@ from awesome_claude.core.router.dispatcher import create_dispatcher
 from awesome_claude.core.server.tcp import TCPServer
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.registry import SessionRegistry
-from awesome_claude.core.task.manager import TaskManager
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.errors import LLM_AUTH_ERROR
 from awesome_claude.protocol.methods import (
@@ -25,7 +24,7 @@ from awesome_claude.protocol.methods import (
     METHOD_PING,
     NOTIFY_CHAT_STREAM,
 )
-from awesome_claude.shared.logging.task_tracker import TaskTracker
+from awesome_claude.shared.logging.trace_store import TraceStore
 from awesome_claude.shared.types import TokenUsage
 
 
@@ -57,17 +56,16 @@ def make_collector(
 
 
 async def _build_server(tmp_path: Path, llm: Any) -> tuple[TCPServer, Path]:
-    """构建新架构 TCPServer，返回 (server, task 日志根目录)。"""
-    tasks_dir = tmp_path / "logs" / "tasks"
-    tracker = TaskTracker(str(tasks_dir))
-    task_manager = TaskManager(tracker)
+    """构建新架构 TCPServer，返回 (server, 轨迹根目录)。"""
+    runs_dir = tmp_path / "logs" / "runs"
+    trace_store = TraceStore(str(runs_dir))
     dispatcher = create_dispatcher()
     config = ServerConfig(api_key="k", model="m", host="127.0.0.1", port=0)
-    registry = SessionRegistry(task_manager)
+    registry = SessionRegistry()
 
     def context_factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(
-            task_manager=task_manager,
+            trace_store=trace_store,
             llm_client=llm,
             sessions=channel,
             config=config,
@@ -76,13 +74,13 @@ async def _build_server(tmp_path: Path, llm: Any) -> tuple[TCPServer, Path]:
 
     server = TCPServer(config.host, config.port, dispatcher, context_factory, registry)
     await server.start()
-    return server, tasks_dir
+    return server, runs_dir
 
 
-def _read_task_events(tasks_dir: Path) -> list[dict[str, Any]]:
-    """读取 task 日志根目录下全部 JSONL 事件。"""
+def _read_trace_events(runs_dir: Path) -> list[dict[str, Any]]:
+    """读取轨迹根目录下全部 JSONL 事件。"""
     events: list[dict[str, Any]] = []
-    for path in tasks_dir.glob("*/*.jsonl"):
+    for path in runs_dir.glob("*/*.jsonl"):
         events.extend(
             json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
         )
@@ -138,7 +136,7 @@ async def test_chat_full_flow(tmp_path: Path) -> None:
             assert result["stop_reason"] == "end_turn"
             assert result["usage"]["input_tokens"] == 5
             assert result["usage"]["output_tokens"] == 8
-            assert result["task_id"]
+            assert result["run_id"]
             assert result["model"] == "m"
 
             assert len(notifications) == 4
@@ -153,8 +151,8 @@ async def test_chat_full_flow(tmp_path: Path) -> None:
         await server.stop()
 
 
-async def test_task_logs_full_lifecycle(tmp_path: Path) -> None:
-    """任务日志：JSONL 包含完整阶段事件序列。"""
+async def test_trace_logs_full_lifecycle(tmp_path: Path) -> None:
+    """轨迹日志：JSONL 包含完整阶段事件序列。"""
     events = [
         TextDeltaEvent("hi"),
         DoneEvent(
@@ -167,37 +165,37 @@ async def test_task_logs_full_lifecycle(tmp_path: Path) -> None:
             },
         ),
     ]
-    server, tasks_dir = await _build_server(tmp_path, FakeLLM(events))
+    server, runs_dir = await _build_server(tmp_path, FakeLLM(events))
     try:
         conn = ClientConnection(*server.bound_addr)
         await conn.connect()
         try:
             resp = await conn.send_request(METHOD_CHAT, {"message": "hello"})
-            task_id = resp["result"]["task_id"]
-            assert len(task_id) == 8
+            run_id = resp["result"]["run_id"]
+            assert len(run_id) == 8
         finally:
             await conn.disconnect()
     finally:
         await server.stop()
 
     date_dir = datetime.now(UTC).strftime("%Y-%m-%d")
-    path = tasks_dir / date_dir / f"{task_id}.jsonl"
+    path = runs_dir / date_dir / f"{run_id}.jsonl"
     assert path.exists()
     stages = [json.loads(line)["stage"] for line in path.read_text().splitlines()]
     assert stages == [
-        "task_created",
+        "run_created",
         "context_built",
         "step_started",
         "llm_request_sent",
         "llm_streaming",
         "llm_response_done",
-        "task_completed",
+        "run_completed",
     ]
 
 
-async def test_llm_failure_records_task_failed(tmp_path: Path) -> None:
-    """LLM 失败：客户端收到错误响应，日志记录 TASK_FAILED。"""
-    server, tasks_dir = await _build_server(
+async def test_llm_failure_records_run_failed(tmp_path: Path) -> None:
+    """LLM 失败：客户端收到错误响应，日志记录 RUN_FAILED。"""
+    server, runs_dir = await _build_server(
         tmp_path, FakeLLM(exc=LLMAuthError("bad key"))
     )
     try:
@@ -212,9 +210,9 @@ async def test_llm_failure_records_task_failed(tmp_path: Path) -> None:
     finally:
         await server.stop()
 
-    events = _read_task_events(tasks_dir)
+    events = _read_trace_events(runs_dir)
     assert events
-    failed = [e for e in events if e["stage"] == "task_failed"]
+    failed = [e for e in events if e["stage"] == "run_failed"]
     assert len(failed) == 1
     assert failed[0]["data"]["error_type"] == "LLMAuthError"
     assert failed[0]["data"]["error_message"] == "bad key"

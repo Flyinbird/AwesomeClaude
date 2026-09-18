@@ -2,7 +2,7 @@
 
 ## 架构概述
 
-AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 `core/`（常驻守护进程）通过 TCP Socket 传输 JSON-RPC 2.0 消息通信，两者只能依赖 `protocol/` 包中定义的共享协议（消息编解码、方法名与参数/返回类型、错误码），不能互相直接 import。客户端负责命令解析、请求发送、响应与流式输出渲染；核心服务端负责 TCP 监听、请求路由、业务处理器分发，通过 `core/agent/`（AgentLoop 多轮 LLM + 工具编排）、`core/tools/`（ToolRegistry 工具注册与执行）、`core/session/`（多客户端会话共享）、`core/llm/`（LLMProvider 协议 + AnthropicClient 流式调用 Anthropic API）、`core/task/`（TaskManager 任务生命周期追踪）、`shared/logging/`（structlog 结构化日志 + TaskTracker JSONL）支撑完整链路。所有网络 I/O 基于 asyncio，支持多客户端并发与 SIGTERM/SIGINT 优雅退出。
+AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 `core/`（常驻守护进程）通过 TCP Socket 传输 JSON-RPC 2.0 消息通信，两者只能依赖 `protocol/` 包中定义的共享协议（消息编解码、方法名与参数/返回类型、错误码），不能互相直接 import。客户端负责命令解析、请求发送、响应与流式输出渲染；核心服务端负责 TCP 监听、请求路由、业务处理器分发，通过 `core/agent/`（AgentLoop 多轮 LLM + 工具编排）、`core/tools/`（ToolRegistry 工具注册与执行）、`core/session/`（多客户端会话共享）、`core/llm/`（LLMProvider 协议 + AnthropicClient 流式调用 Anthropic API）、`core/observability/`（TraceRecorder Run 轨迹记录）、`shared/logging/`（structlog 结构化日志 + TraceStore JSONL）支撑完整链路。所有网络 I/O 基于 asyncio，支持多客户端并发与 SIGTERM/SIGINT 优雅退出。
 
 ## 架构图
 
@@ -27,6 +27,7 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 |                           |  <----------------------   |  · session: attach/detach  |
 |                           |  通知（Server→Client，实时推送）                          |
 |                           |   chat.stream / chat.tool_* / chat.user_message          |
+|                           |   chat.plan_updated（任务计划快照）                       |
 +-----------+---------------+                             +--------------+-------------+
             |                                                     |
             |  protocol/jsonrpc.py · 消息构造/解析/校验             |
@@ -37,10 +38,11 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
             +--------------------------+--------------------------+
             |  core/agent/loop.py   · AgentLoop 多轮编排           |
             |  core/tools/          · ToolRegistry 工具注册/执行     |
+            |  core/task/           · TaskGraph 任务 DAG / 状态机     |
             |  core/session/        · SessionRegistry 会话共享      |
             |  core/llm/anthropic_client.py · Anthropic SDK 流式封装   |
-            |  core/task/manager.py · TaskManager 生命周期（step 化）|
-            |  shared/logging/task_tracker.py · 写入 logs/tasks/*.jsonl |
+            |  core/observability/trace_recorder.py · TraceRecorder Run 轨迹（step 化）|
+            |  shared/logging/trace_store.py · 写入 logs/runs/*.jsonl |
             |  shared/logging/app_logger.py · structlog（stdout 彩色 + 文件 JSON） |
             +------------------------------------------------------+
 ```
@@ -55,27 +57,30 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `core/server/tcp.py` | TCP 监听、多客户端并发、优雅停止 |
 | `core/server/session.py` | 逐行读取 → 解析 → 分发 → 回写；控制类请求内联、chat 任务化为 Run；断连取消与发送串行化 |
 | `core/router/dispatcher.py` | 方法分发，未注册方法返回 METHOD_NOT_FOUND |
-| `core/router/context.py` | HandlerContext（task_manager / llm_client / sessions / config / agent_loop / run） |
+| `core/router/context.py` | HandlerContext（trace_store / llm_client / sessions / config / agent_loop / run） |
 | `core/agent/loop.py` | AgentLoop：多轮 LLM + 工具编排，`on_event` / `on_step` 回调透出事件，撞 max_steps 时收尾/截断 |
 | `core/agent/events.py` | StepStarted / StepFinished / ToolStarted / ToolFinished |
 | `core/agent/result.py` | AgentResult（文本、消息历史、用量、步数、StopReason） |
-| `core/tools/registry.py` | ToolRegistry：注册 / 查询 / 执行 / 转 Anthropic tools schema |
+| `core/tools/registry.py` | ToolRegistry：注册 / 查询 / 执行（注入 ToolContext + ToolScope）/ 转 Anthropic tools schema |
 | `core/tools/builtin/time.py` | 内置 `get_time` 工具 |
+| `core/tools/builtin/plan.py` | 任务计划工具：add_tasks / update_task_deps / start_task / complete_task / reopen_task / suspend_task |
+| `core/task/graph.py` | TaskGraph：Run 内任务依赖 DAG 的校验与状态转换，变更经 on_change 派发 |
+| `core/task/task.py` | Task / TaskStatus：三态任务与 attempts / last_error 元数据 |
 | `core/session/registry.py` | ConnectionSink / Session / SessionRegistry（订阅、在途 Run、广播、状态、零订阅取消与临时会话销毁） |
 | `core/session/run.py` | Run / RunState / RunInitiator：会话拥有的对话执行实体与唯一终态状态机 |
 | `core/session/channel.py` | SessionChannel：每连接门面，广播（含指定会话）或单播 |
-| `core/handlers/chat.py` | chat 完整流程：任务追踪 + 委托 AgentLoop + 通知广播 |
+| `core/handlers/chat.py` | chat 完整流程：Run 轨迹记录 + 任务计划（TaskGraph）+ 委托 AgentLoop + 通知广播 |
 | `core/handlers/session.py` | session.attach / session.detach |
 | `core/llm/base.py` | LLMProvider 协议：供应商无关的流式/非流式客户端接口 |
 | `core/llm/anthropic_client.py` | AnthropicClient：Anthropic SDK 封装（`chat_stream` 文本/思考/工具事件、`chat`、异常映射） |
-| `core/task/manager.py` | 任务创建与阶段事件记录（含 step 维度） |
-| `core/app.py` | 装配 TaskManager/AnthropicClient/ToolRegistry/AgentLoop/SessionRegistry/TCPServer |
+| `core/observability/trace_recorder.py` | Run 作用域轨迹记录（绑定 run_id 与起点，含 step 维度） |
+| `core/app.py` | 装配 TraceStore/AnthropicClient/ToolRegistry/AgentLoop/SessionRegistry/TCPServer |
 | `core/config.py` | ServerConfig + `load_server_config()`（.env / 环境变量） |
 | `client/cli/app.py` | REPL 主循环，attach 会话、注册各类通知处理器 |
 | `client/transport/receiver.py` | 后台读取，response → Future，notification → handler |
 | `client/transport/connection.py` | 连接管理、request-response、通知注册 |
-| `shared/types.py` | TaskStage / StopReason / TaskEvent / StreamChunk / TokenUsage / ChatResponse |
-| `shared/logging/task_tracker.py` | TaskEvent 写入 `{log_dir}/{date}/{task_id}.jsonl` |
+| `shared/types.py` | TraceStage / StopReason / TraceEvent / StreamChunk / TokenUsage / ChatResponse |
+| `shared/logging/trace_store.py` | TraceEvent 写入 `{log_dir}/{date}/{run_id}.jsonl` |
 | `shared/logging/app_logger.py` | structlog 配置（stdout 彩色文本 + 文件 JSON） |
 
 ## chat 请求完整数据流
@@ -86,7 +91,7 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
   → connection.send_request("chat", {"message": "你好", "session_id": "…"})   # id=N
   → core/session 收到请求 → dispatcher.dispatch("chat", params, context)
   → handle_chat:
-      1. task_manager.create_task()      → task_id + TASK_CREATED 写入 JSONL
+      1. recorder.run_created()          → run_id + RUN_CREATED 写入 JSONL
       2. record_stage(CONTEXT_BUILT)     → 构建上下文
       3. （若带 session_id）channel.attach(session_id) 订阅会话
       4. agent_loop.run(message, on_event, on_step)
@@ -96,17 +101,17 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
              on_step(ToolStarted/ToolFinished) → record_stage(TOOL_*) + broadcast("chat.tool_*")
              on_step(StepFinished) → record_stage(LLM_RESPONSE_DONE, step_index)
       5. broadcast("chat.stream", {…, is_final:true})  → 流结束
-      6. （若带 session_id）channel.record_turn(user, assistant, task_id) 记录会话历史
-      7. complete_task() / ChatResponse 返回
-  → session 回写 response（含 task_id / text / usage / duration_ms / model）
-  → client 收到 → render_summary() 显示 tokens / 耗时 / task_id
+      6. （若带 session_id）channel.record_turn(user, assistant, run_id) 记录会话历史
+      7. recorder.run_completed() / ChatResponse 返回
+  → session 回写 response（含 run_id / text / usage / duration_ms / model）
+  → client 收到 → render_summary() 显示 tokens / 耗时 / run_id
 ```
 
-## 任务生命周期阶段
+## 执行轨迹阶段
 
 | 阶段 | 说明 |
 | --- | --- |
-| `task_created` | 任务创建，记录 user_input、client_addr |
+| `run_created` | Run 创建，记录 user_input、client_addr |
 | `context_built` | 上下文构建，记录 message_count |
 | `step_started` | 一轮 agent step 开始（每次 LLM 调用） |
 | `llm_request_sent` | LLM 请求已发出，记录 model |
@@ -115,12 +120,17 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `tool_started` | 工具调用开始，记录 tool_name、args |
 | `tool_completed` | 工具调用成功，记录 tool_name |
 | `tool_failed` | 工具调用失败，记录 tool_name |
-| `task_completed` | 正常完成，记录 text_length、stop_reason、steps |
-| `task_failed` | 失败，记录 failed_stage、error_type、error_message、traceback |
-| `task_interrupted` | 达到最大步数（max_steps）未完整完成，记录 stop_reason、steps |
-| `task_cancelled` | 在途 Run 被取消（断连零订阅 / 服务端退出），记录 session_id |
+| `task_added` | 任务加入计划，记录 goal / deps |
+| `task_started` | 任务开始执行 |
+| `task_completed` | 任务完成 |
+| `task_reopened` | 任务失败退回待启动，累计 attempts、记录 last_error |
+| `task_suspended` | 任务让位退回待启动（不计 attempts） |
+| `run_completed` | 正常完成，记录 text_length、stop_reason、steps |
+| `run_failed` | 失败，记录 failed_stage、error_type、error_message、traceback |
+| `run_interrupted` | 达到最大步数（max_steps）未完整完成，记录 stop_reason、steps |
+| `run_cancelled` | 在途 Run 被取消（断连零订阅 / 服务端退出），记录 session_id |
 
-每个阶段事件以 JSON 行写入 `logs/tasks/{date}/{task_id}.jsonl`，含 `task_id / stage / timestamp / duration_ms / data / step_index`。`step_index` 用于区分多轮 Agent Loop 中的轮次（顶层阶段为 null）。
+每个阶段事件以 JSON 行写入 `logs/runs/{date}/{run_id}.jsonl`，含 `run_id / stage / timestamp / duration_ms / data / step_index`。`step_index` 用于区分多轮 Agent Loop 中的轮次（顶层阶段为 null）。
 
 ## 多客户端会话与 Run 生命周期
 
@@ -129,7 +139,7 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 - `chat.user_message` 广播用户输入时排除发起方（`exclude_self`）。
 - **Run**：每次对话执行由目标会话拥有，承载一个 asyncio 任务，状态机为 `RUNNING → {COMPLETED, FAILED, INTERRUPTED, CANCELLED}`，终态只记录一次。未携带 `session_id` 的对话使用服务端生成的临时会话，对话结束即销毁；命名会话在无订阅时保留历史以供回放。
 - **每会话单活跃 Run**：会话已有在途 Run 时，新对话被拒绝并返回应用错误码 `-32004 SESSION_BUSY`。
-- **零订阅取消**：最后一个订阅连接 detach 后，会话活跃 Run 被取消并在非取消上下文记录 `task_cancelled`。`session.attach` 返回的 `active_tasks` 仅包含在途 Run 标识。
+- **零订阅取消**：最后一个订阅连接 detach 后，会话活跃 Run 被取消并在非取消上下文记录 `run_cancelled`。`session.attach` 返回的 `active_runs` 仅包含在途 Run 标识。
 - **取消不写历史**：被取消的 Run 不向会话历史追加轮次，避免半截对话污染回放。
 
 ## 连接生命周期

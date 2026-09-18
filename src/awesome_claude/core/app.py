@@ -14,16 +14,19 @@ from awesome_claude.core.router.dispatcher import create_dispatcher
 from awesome_claude.core.server.tcp import TCPServer
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.registry import SessionRegistry
-from awesome_claude.core.task.manager import TaskManager
-from awesome_claude.core.tools.builtin import create_fs_tools, create_time_tool
+from awesome_claude.core.tools.builtin import (
+    create_fs_tools,
+    create_plan_tools,
+    create_time_tool,
+)
 from awesome_claude.core.tools.context import ToolContext
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.shared.logging.app_logger import get_app_logger, setup_app_logging
-from awesome_claude.shared.logging.task_tracker import get_task_tracker
+from awesome_claude.shared.logging.trace_store import TraceStore, get_trace_store
 
 
 def build_context_factory(
-    task_manager: TaskManager,
+    trace_store: TraceStore,
     llm_client: LLMProvider,
     config: ServerConfig,
     agent_loop: AgentLoop,
@@ -31,7 +34,7 @@ def build_context_factory(
     """构造会话上下文工厂。
 
     Args:
-        task_manager: 任务管理器。
+        trace_store: 轨迹存储。
         llm_client: LLM 客户端。
         config: 服务端配置。
         agent_loop: Agent 循环编排器。
@@ -42,7 +45,7 @@ def build_context_factory(
 
     def factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(
-            task_manager=task_manager,
+            trace_store=trace_store,
             llm_client=llm_client,
             sessions=channel,
             config=config,
@@ -62,8 +65,7 @@ async def run_server(config: ServerConfig | None = None) -> None:
     setup_app_logging(Path(config.log_dir) / "server.log", level=config.log_level)
     logger = get_app_logger("core.app")
 
-    task_tracker = get_task_tracker()
-    task_manager = TaskManager(task_tracker)
+    trace_store = get_trace_store()
     llm_client = AnthropicClient(
         api_key=config.api_key,
         model=config.model,
@@ -76,14 +78,12 @@ async def run_server(config: ServerConfig | None = None) -> None:
         fs_max_write=config.fs_max_write,
     )
     tool_registry = ToolRegistry(tool_context)
-    for tool in [create_time_tool(), *create_fs_tools()]:
+    for tool in [create_time_tool(), *create_fs_tools(), *create_plan_tools()]:
         tool_registry.register(tool)
     agent_loop = AgentLoop(llm_client, tool_registry)
     dispatcher = create_dispatcher()
-    session_registry = SessionRegistry(task_manager)
-    context_factory = build_context_factory(
-        task_manager, llm_client, config, agent_loop
-    )
+    session_registry = SessionRegistry()
+    context_factory = build_context_factory(trace_store, llm_client, config, agent_loop)
     server = TCPServer(
         config.host, config.port, dispatcher, context_factory, session_registry
     )

@@ -1,6 +1,7 @@
 """chat 处理器 - 委托 AgentLoop 执行 LLM 对话（Phase 2/3）。"""
 
 import time
+import uuid
 from dataclasses import asdict
 from typing import Any
 
@@ -17,8 +18,11 @@ from awesome_claude.core.llm.exceptions import (
     LLMError,
     LLMTimeoutError,
 )
+from awesome_claude.core.observability.trace_recorder import TraceRecorder
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.session.run import RunState
+from awesome_claude.core.task.graph import TaskChange, TaskChangeKind, TaskGraph
+from awesome_claude.core.tools.context import ToolScope
 from awesome_claude.protocol.errors import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
@@ -30,15 +34,24 @@ from awesome_claude.protocol.errors import (
 from awesome_claude.protocol.methods import (
     METHOD_CHAT,
     NOTIFY_CHAT_INTERRUPTED,
+    NOTIFY_CHAT_PLAN_UPDATED,
     NOTIFY_CHAT_STREAM,
     NOTIFY_CHAT_TOOL_FINISHED,
     NOTIFY_CHAT_TOOL_STARTED,
     NOTIFY_CHAT_USER_MESSAGE,
 )
 from awesome_claude.shared.logging.app_logger import get_app_logger
-from awesome_claude.shared.types import ChatResponse, StopReason, TaskStage
+from awesome_claude.shared.types import ChatResponse, StopReason, TraceStage
 
 _logger = get_app_logger("core.handlers.chat")
+
+_TASK_CHANGE_STAGE: dict[TaskChangeKind, TraceStage] = {
+    TaskChangeKind.ADDED: TraceStage.TASK_ADDED,
+    TaskChangeKind.STARTED: TraceStage.TASK_STARTED,
+    TaskChangeKind.COMPLETED: TraceStage.TASK_COMPLETED,
+    TaskChangeKind.REOPENED: TraceStage.TASK_REOPENED,
+    TaskChangeKind.SUSPENDED: TraceStage.TASK_SUSPENDED,
+}
 
 
 def _clip_text(text: str, *, head: int = 100, tail: int = 100) -> tuple[str, bool]:
@@ -123,11 +136,11 @@ def _error_code(exc: LLMError) -> int:
     return LLM_ERROR
 
 
-def _failed_stage(exc: LLMError) -> TaskStage:
+def _failed_stage(exc: LLMError) -> TraceStage:
     """LLM 异常对应的失败阶段。"""
     if isinstance(exc, LLMAuthError):
-        return TaskStage.LLM_REQUEST_SENT
-    return TaskStage.LLM_STREAMING
+        return TraceStage.LLM_REQUEST_SENT
+    return TraceStage.LLM_STREAMING
 
 
 @register_handler(METHOD_CHAT)
@@ -136,9 +149,9 @@ async def handle_chat(
 ) -> dict[str, Any]:
     """处理 chat 请求的完整流程。
 
-    流程：TASK_CREATED → CONTEXT_BUILT →（每轮 step）STEP_STARTED →
+    流程：RUN_CREATED → CONTEXT_BUILT →（每轮 step）STEP_STARTED →
     LLM_REQUEST_SENT → LLM_STREAMING → LLM_RESPONSE_DONE →（工具调用）
-    TOOL_STARTED → TOOL_COMPLETED/TOOL_FAILED → TASK_COMPLETED。
+    TOOL_STARTED → TOOL_COMPLETED/TOOL_FAILED → RUN_COMPLETED。
     实际对话由 AgentLoop 编排，支持多轮工具调用。
 
     若 params 携带 session_id，则当前连接订阅到该会话，所有通知
@@ -157,7 +170,6 @@ async def handle_chat(
 
     message = params["message"]
     session_id = params.get("session_id")
-    task_manager = context.task_manager
     agent_loop = context.agent_loop
     channel = context.sessions
     run = context.run
@@ -166,17 +178,18 @@ async def handle_chat(
             run.finish(RunState.FAILED)
         return build_error_response(None, INTERNAL_ERROR, "agent loop 未配置")
 
-    if run is not None:
-        task_id = run.run_id
+    if run is not None and run.recorder is not None:
+        run_id = run.run_id
         start_time = run.start_time
+        recorder = run.recorder
     else:
-        try:
-            task_id, start_time = await task_manager.create_task(
-                message, client_addr="unknown"
+        run_id = run.run_id if run is not None else uuid.uuid4().hex[:8]
+        start_time = run.start_time if run is not None else time.monotonic()
+        recorder = TraceRecorder(context.trace_store, run_id, start_time)
+        if run is None:
+            await recorder.run_created(
+                {"user_input": str(message), "client_addr": "unknown"}
             )
-        except Exception as exc:
-            _logger.exception("create task failed")
-            return build_error_response(None, INTERNAL_ERROR, f"任务创建失败: {exc}")
 
     if session_id is not None and channel.session_id != session_id:
         channel.attach(session_id)
@@ -197,6 +210,36 @@ async def handle_chat(
     chunk_index = 0
     current_step = 0
 
+    task_graph = TaskGraph(run_id)
+
+    async def on_task_change(change: TaskChange) -> None:
+        """任务图变更 → 轨迹事件 + 计划进度通知。"""
+        stage = _TASK_CHANGE_STAGE.get(change.kind)
+        if stage is not None:
+            await recorder.record(
+                stage,
+                {
+                    "task_id": change.task.id,
+                    "goal": change.task.goal,
+                    "status": change.task.status.value,
+                    "deps": list(change.task.deps),
+                    "attempts": change.task.attempts,
+                    "last_error": change.task.last_error,
+                },
+                step_index=current_step or None,
+            )
+        await emit(
+            NOTIFY_CHAT_PLAN_UPDATED,
+            {
+                "run_id": run_id,
+                "tasks": task_graph.snapshot(),
+                "session_id": session_id,
+            },
+        )
+
+    task_graph = TaskGraph(run_id, on_change=on_task_change)
+    scope = ToolScope(run_id=run_id, task_graph=task_graph)
+
     async def on_event(event: Any) -> None:
         nonlocal chunk_index
         if isinstance(event, TextDeltaEvent):
@@ -204,7 +247,7 @@ async def handle_chat(
             await emit(
                 NOTIFY_CHAT_STREAM,
                 {
-                    "task_id": task_id,
+                    "run_id": run_id,
                     "chunk_index": chunk_index,
                     "text": event.text,
                     "is_final": False,
@@ -217,10 +260,8 @@ async def handle_chat(
         if isinstance(event, StepStarted):
             current_step = event.step_index
             if event.step_index == 1:
-                await task_manager.record_stage(
-                    task_id,
-                    start_time,
-                    TaskStage.CONTEXT_BUILT,
+                await recorder.record(
+                    TraceStage.CONTEXT_BUILT,
                     {
                         "system": event.system,
                         "messages": _clip_messages(event.messages),
@@ -230,37 +271,31 @@ async def handle_chat(
                         else [],
                     },
                 )
-            await task_manager.record_stage(
-                task_id,
-                start_time,
-                TaskStage.STEP_STARTED,
-                {},
+            await recorder.record(
+                TraceStage.STEP_STARTED,
+                {"task_id": task_graph.current_task_id()},
                 step_index=event.step_index,
             )
-            await task_manager.record_stage(
-                task_id,
-                start_time,
-                TaskStage.LLM_REQUEST_SENT,
+            await recorder.record(
+                TraceStage.LLM_REQUEST_SENT,
                 {
+                    "task_id": task_graph.current_task_id(),
                     "model": context.config.model,
                     "messages": _clip_messages(event.messages),
                 },
                 step_index=event.step_index,
             )
-            await task_manager.record_stage(
-                task_id,
-                start_time,
-                TaskStage.LLM_STREAMING,
-                {},
+            await recorder.record(
+                TraceStage.LLM_STREAMING,
+                {"task_id": task_graph.current_task_id()},
                 step_index=event.step_index,
             )
         elif isinstance(event, StepFinished):
             text, truncated = _clip_text(event.text)
-            await task_manager.record_stage(
-                task_id,
-                start_time,
-                TaskStage.LLM_RESPONSE_DONE,
+            await recorder.record(
+                TraceStage.LLM_RESPONSE_DONE,
                 {
+                    "task_id": task_graph.current_task_id(),
                     "stop_reason": event.stop_reason,
                     "input_tokens": event.input_tokens,
                     "output_tokens": event.output_tokens,
@@ -271,17 +306,19 @@ async def handle_chat(
                 step_index=event.step_index,
             )
         elif isinstance(event, ToolStarted):
-            await task_manager.record_stage(
-                task_id,
-                start_time,
-                TaskStage.TOOL_STARTED,
-                {"tool_name": event.tool_name, "args": event.args},
+            await recorder.record(
+                TraceStage.TOOL_STARTED,
+                {
+                    "task_id": task_graph.current_task_id(),
+                    "tool_name": event.tool_name,
+                    "args": event.args,
+                },
                 step_index=event.step_index,
             )
             await emit(
                 NOTIFY_CHAT_TOOL_STARTED,
                 {
-                    "task_id": task_id,
+                    "run_id": run_id,
                     "step_index": event.step_index,
                     "tool_name": event.tool_name,
                     "args": event.args,
@@ -290,11 +327,10 @@ async def handle_chat(
             )
         elif isinstance(event, ToolFinished):
             content, content_truncated = _clip_text(event.content)
-            await task_manager.record_stage(
-                task_id,
-                start_time,
-                TaskStage.TOOL_FAILED if event.is_error else TaskStage.TOOL_COMPLETED,
+            await recorder.record(
+                TraceStage.TOOL_FAILED if event.is_error else TraceStage.TOOL_COMPLETED,
                 {
+                    "task_id": task_graph.current_task_id(),
                     "tool_name": event.tool_name,
                     "is_error": event.is_error,
                     "content": content,
@@ -305,7 +341,7 @@ async def handle_chat(
             await emit(
                 NOTIFY_CHAT_TOOL_FINISHED,
                 {
-                    "task_id": task_id,
+                    "run_id": run_id,
                     "step_index": event.step_index,
                     "tool_name": event.tool_name,
                     "is_error": event.is_error,
@@ -321,12 +357,14 @@ async def handle_chat(
                 exclude_self=True,
             )
 
-        result = await agent_loop.run(message, on_event=on_event, on_step=on_step)
+        result = await agent_loop.run(
+            message, on_event=on_event, on_step=on_step, scope=scope
+        )
 
         await emit(
             NOTIFY_CHAT_STREAM,
             {
-                "task_id": task_id,
+                "run_id": run_id,
                 "chunk_index": chunk_index,
                 "text": "",
                 "is_final": True,
@@ -335,10 +373,10 @@ async def handle_chat(
         )
 
         if named_session is not None:
-            channel.record_turn(message, result.text, task_id, session_id=named_session)
+            channel.record_turn(message, result.text, run_id, session_id=named_session)
 
         response = ChatResponse(
-            task_id=task_id,
+            run_id=run_id,
             text=result.text,
             stop_reason=result.stop_reason,
             usage=result.usage,
@@ -347,10 +385,7 @@ async def handle_chat(
         )
         if result.stop_reason == StopReason.MAX_STEPS:
             text, truncated = _clip_text(response.text)
-            await task_manager.record_stage(
-                task_id,
-                start_time,
-                TaskStage.TASK_INTERRUPTED,
+            await recorder.run_interrupted(
                 {
                     "stop_reason": result.stop_reason,
                     "steps": result.steps,
@@ -363,7 +398,7 @@ async def handle_chat(
             await emit(
                 NOTIFY_CHAT_INTERRUPTED,
                 {
-                    "task_id": task_id,
+                    "run_id": run_id,
                     "stop_reason": result.stop_reason,
                     "step_index": result.steps,
                     "session_id": session_id,
@@ -373,24 +408,20 @@ async def handle_chat(
                 run.finish(RunState.INTERRUPTED)
         else:
             text, truncated = _clip_text(response.text)
-            await task_manager.complete_task(
-                task_id,
-                start_time,
+            await recorder.run_completed(
                 {
                     "text_length": len(response.text),
                     "stop_reason": response.stop_reason,
                     "steps": result.steps,
                     "text": text,
                     "text_truncated": truncated,
-                },
+                }
             )
             if run is not None:
                 run.finish(RunState.COMPLETED)
         return asdict(response)
     except LLMError as exc:
-        await task_manager.fail_task(
-            task_id,
-            start_time,
+        await recorder.run_failed(
             exc,
             _failed_stage(exc),
             step_index=current_step or None,
@@ -400,11 +431,9 @@ async def handle_chat(
         return build_error_response(None, _error_code(exc), str(exc))
     except Exception as exc:
         _logger.exception("chat handler failed")
-        await task_manager.fail_task(
-            task_id,
-            start_time,
+        await recorder.run_failed(
             exc,
-            TaskStage.LLM_STREAMING,
+            TraceStage.LLM_STREAMING,
             step_index=current_step or None,
         )
         if run is not None:

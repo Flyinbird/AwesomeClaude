@@ -14,6 +14,7 @@ from awesome_claude.protocol.methods import (
     METHOD_PING,
     METHOD_SESSION_ATTACH,
     NOTIFY_CHAT_INTERRUPTED,
+    NOTIFY_CHAT_PLAN_UPDATED,
     NOTIFY_CHAT_STREAM,
     NOTIFY_CHAT_TOOL_FINISHED,
     NOTIFY_CHAT_TOOL_STARTED,
@@ -67,7 +68,7 @@ class CLIApp:
         self._connection: ClientConnection | None = None
         self._renderer = StreamRenderer()
         self._session_stats: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
-        self._active_task_id: str | None = None
+        self._active_run_id: str | None = None
         self._logger = get_app_logger("client.cli")
 
     async def run(self) -> None:
@@ -102,6 +103,7 @@ class CLIApp:
         conn.on_notification(NOTIFY_CHAT_TOOL_STARTED, self._handle_tool_started)
         conn.on_notification(NOTIFY_CHAT_TOOL_FINISHED, self._handle_tool_finished)
         conn.on_notification(NOTIFY_CHAT_INTERRUPTED, self._handle_interrupted)
+        conn.on_notification(NOTIFY_CHAT_PLAN_UPDATED, self._handle_plan_updated)
 
     async def _attach(self, conn: ClientConnection) -> None:
         """订阅到会话并回放历史。"""
@@ -120,16 +122,16 @@ class CLIApp:
             self._renderer.render_history(history)
 
     async def _handle_stream_notification(self, params: dict[str, Any]) -> None:
-        """处理 chat.stream 通知并渲染流式文本（按 task_id 区分任务）。"""
-        task_id = params.get("task_id")
+        """处理 chat.stream 通知并渲染流式文本（按 run_id 区分 Run）。"""
+        run_id = params.get("run_id")
         is_final = params.get("is_final")
         if not is_final:
-            if task_id is not None and task_id != self._active_task_id:
-                self._active_task_id = task_id
+            if run_id is not None and run_id != self._active_run_id:
+                self._active_run_id = run_id
             self._renderer.render_chunk(str(params.get("text", "")))
         else:
             self._renderer.render_done()
-            self._active_task_id = None
+            self._active_run_id = None
 
     async def _handle_user_message(self, params: dict[str, Any]) -> None:
         """渲染其他客户端广播的用户输入。"""
@@ -148,6 +150,12 @@ class CLIApp:
     async def _handle_interrupted(self, params: dict[str, Any]) -> None:
         """渲染任务被中断提示。"""
         self._renderer.render_interrupted(str(params.get("stop_reason", "")))
+
+    async def _handle_plan_updated(self, params: dict[str, Any]) -> None:
+        """渲染任务计划快照。"""
+        tasks = params.get("tasks", [])
+        if isinstance(tasks, list):
+            self._renderer.render_plan(tasks)
 
     async def _process_line(self, line: str, conn: ClientConnection) -> bool:
         """处理一行输入；返回 False 表示退出。"""

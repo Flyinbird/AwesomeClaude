@@ -95,7 +95,7 @@ class SessionChannel:
         self,
         user_message: str,
         assistant_text: str,
-        task_id: str,
+        run_id: str,
         *,
         session_id: str | None = None,
     ) -> None:
@@ -104,7 +104,7 @@ class SessionChannel:
         Args:
             user_message: 用户输入。
             assistant_text: assistant 最终回复文本。
-            task_id: 本轮任务 ID。
+            run_id: 本轮所属 Run 标识。
             session_id: 目标会话 ID（缺省用本连接当前订阅）。
         """
         target = session_id if session_id is not None else self._session_id
@@ -112,8 +112,8 @@ class SessionChannel:
         if session is None:
             return
         session.history.append(
-            {"role": "user", "content": user_message, "task_id": task_id}
+            {"role": "user", "content": user_message, "run_id": run_id}
         )
         session.history.append(
-            {"role": "assistant", "content": assistant_text, "task_id": task_id}
+            {"role": "assistant", "content": assistant_text, "run_id": run_id}
         )

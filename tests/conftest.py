@@ -62,17 +62,15 @@ async def server(tmp_path: Any) -> Any:
     from awesome_claude.core.server.tcp import TCPServer
     from awesome_claude.core.session.channel import SessionChannel
     from awesome_claude.core.session.registry import SessionRegistry
-    from awesome_claude.core.task.manager import TaskManager
-    from awesome_claude.shared.logging.task_tracker import TaskTracker
+    from awesome_claude.shared.logging.trace_store import TraceStore
 
-    tracker = TaskTracker(str(tmp_path / "tasks"))
-    task_manager = TaskManager(tracker)
+    trace_store = TraceStore(str(tmp_path / "runs"))
     config = ServerConfig(api_key="test-key", host="127.0.0.1", port=0)
-    registry = SessionRegistry(task_manager)
+    registry = SessionRegistry()
 
     def context_factory(channel: SessionChannel) -> HandlerContext:
         return HandlerContext(
-            task_manager=task_manager,
+            trace_store=trace_store,
             llm_client=MagicMock(),
             sessions=channel,
             config=config,

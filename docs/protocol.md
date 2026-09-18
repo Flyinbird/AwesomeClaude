@@ -38,15 +38,15 @@ AwesomeClaude 的 Client 与 Core 之间使用 **JSON-RPC 2.0** 规范进行通�
 - 类型：Request
 - 参数：`{"message": str, "session_id": str | null, "conversation_id": str | null, "max_tokens": int | null}`（后三者可选）
   - `session_id`：多客户端共享会话时指定；服务端据此广播通知并记录会话历史
-- 响应：`{"task_id": str, "text": str, "stop_reason": str, "usage": {"input_tokens": int, "output_tokens": int, ...}, "duration_ms": float, "model": str}`
+- 响应：`{"run_id": str, "text": str, "stop_reason": str, "usage": {"input_tokens": int, "output_tokens": int, ...}, "duration_ms": float, "model": str}`
   - `stop_reason` 取值：`end_turn` / `max_tokens` / `stop_sequence` / `tool_use` / `max_steps`（达到最大步数）/ `unknown`
-- 流程：服务端经 AgentLoop 编排多轮 LLM 调用与工具调用，期间持续推送 `chat.stream`、`chat.tool_started`、`chat.tool_finished` 通知（见下）；达到最大步数时推送 `chat.interrupted` 通知
+- 流程：服务端经 AgentLoop 编排多轮 LLM 调用与工具调用（含任务计划工具 add_tasks / update_task_deps / start_task / complete_task / reopen_task / suspend_task），期间持续推送 `chat.stream`、`chat.tool_started`、`chat.tool_finished` 通知（见下）；任务清单变化时推送 `chat.plan_updated`；达到最大步数时推送 `chat.interrupted` 通知
 
 ### session.attach — 订阅会话
 
 - 类型：Request
 - 参数：`{"session_id": str}`
-- 响应：`{"session_id": str, "history": [{"role", "content", "task_id"}], "active_tasks": [str]}`
+- 响应：`{"session_id": str, "history": [{"role", "content", "run_id"}], "active_runs": [str]}`
   - `history` 为该会话已有对话历史，供晚加入的客户端回放
 
 ### session.detach — 退订会话
@@ -69,7 +69,7 @@ Server → Client 实时推送，在 `chat` 请求处理期间逐块发送，最
   "jsonrpc": "2.0",
   "method": "chat.stream",
   "params": {
-    "task_id": "a1b2c3d4",
+    "run_id": "a1b2c3d4",
     "chunk_index": 1,
     "text": "增量文本",
     "is_final": false,
@@ -87,7 +87,7 @@ Server → Client 推送，报告 Agent Loop 中的工具调用进度。
   "jsonrpc": "2.0",
   "method": "chat.tool_started",
   "params": {
-    "task_id": "a1b2c3d4",
+    "run_id": "a1b2c3d4",
     "step_index": 1,
     "tool_name": "get_time",
     "args": {},
@@ -101,7 +101,7 @@ Server → Client 推送，报告 Agent Loop 中的工具调用进度。
   "jsonrpc": "2.0",
   "method": "chat.tool_finished",
   "params": {
-    "task_id": "a1b2c3d4",
+    "run_id": "a1b2c3d4",
     "step_index": 1,
     "tool_name": "get_time",
     "is_error": false,
@@ -127,20 +127,41 @@ Server → Client 推送，广播会话内某个客户端发起的用户输入�
 
 ## Notification：chat.interrupted
 
-Server → Client 推送，当 agent 循环达到最大步数（max_steps）但任务未完整完成时触发，用于提示用户结果可能不完整。
+Server → Client 推送，当 agent 循环达到最大步数（max_steps）但 Run 未完整完成时触发，用于提示用户结果可能不完整。
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "chat.interrupted",
   "params": {
-    "task_id": "a1b2c3d4",
+    "run_id": "a1b2c3d4",
     "stop_reason": "max_steps",
     "step_index": 26,
     "session_id": "shared-123"
   }
 }
 ```
+
+## Notification：chat.plan_updated
+
+Server → Client 推送，当本次 Run 的任务清单发生变化（新增 / 启动 / 完成 / 重试 / 让位）时，携带最新任务快照。若请求带 `session_id`，则广播到会话内所有订阅连接。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "chat.plan_updated",
+  "params": {
+    "run_id": "a1b2c3d4",
+    "session_id": "shared-123",
+    "tasks": [
+      {"id": "t1", "goal": "读取文件", "status": "completed", "deps": [], "attempts": 0},
+      {"id": "t2", "goal": "写入结果", "status": "pending", "deps": ["t1"], "attempts": 0}
+    ]
+  }
+}
+```
+
+任务状态取值：`pending` / `in_progress` / `completed`（无失败状态，失败经 `reopen` 回到 `pending`）。
 
 ## 错误码
 

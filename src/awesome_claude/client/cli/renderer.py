@@ -41,7 +41,7 @@ class StreamRenderer:
         print(
             f"⏱ {response.get('duration_ms', 0):.0f}ms | model: {response.get('model', '')}"
         )
-        print(f"🔑 task: {response.get('task_id', '')}")
+        print(f"🔑 run: {response.get('run_id', '')}")
 
     def render_error(self, error: dict[str, Any]) -> None:
         """渲染错误信息。
@@ -78,6 +78,22 @@ class StreamRenderer:
             stop_reason: 中断原因（如 max_steps）。
         """
         print(f"⚠️ 任务未完整完成（{stop_reason}）")
+
+    def render_plan(self, tasks: list[Any]) -> None:
+        """渲染任务计划快照。
+
+        Args:
+            tasks: 任务快照列表（含 id / goal / status / deps / attempts）。
+        """
+        if not tasks:
+            return
+        marks = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+        print("🗂 任务计划:")
+        for task in tasks:
+            mark = marks.get(str(task.get("status", "")), "[?]")
+            deps = task.get("deps") or []
+            suffix = f" (依赖: {', '.join(str(d) for d in deps)})" if deps else ""
+            print(f"  {mark} {task.get('goal', task.get('id', ''))}{suffix}")
 
     def render_user_message(self, message: str) -> None:
         """渲染其他客户端的用户输入。
