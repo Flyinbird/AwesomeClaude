@@ -1,6 +1,9 @@
 """客户端 CLI 命令解析与渲染器测试。"""
 
-from awesome_claude.client.cli.app import _sanitize_input
+import asyncio
+import time
+
+from awesome_claude.client.cli.app import CLIApp, _sanitize_input
 from awesome_claude.client.cli.commands import parse_command
 from awesome_claude.client.cli.renderer import StreamRenderer
 
@@ -102,3 +105,74 @@ class TestStreamRenderer:
         out = capsys.readouterr().out
         assert "32002" in out
         assert "auth failed" in out
+
+
+class _FakeConnection:
+    """仅暴露 last_activity 的连接替身。"""
+
+    def __init__(self, last_activity: float) -> None:
+        self.last_activity = last_activity
+
+
+class TestWatchConnection:
+    """心跳看门狗行为测试。"""
+
+    async def test_stale_connection_triggers(self, capsys) -> None:
+        app = CLIApp("127.0.0.1", 1)
+        app._completion_event = asyncio.Event()
+        app._heartbeat_interval_ms = 30
+
+        await app._watch_connection(_FakeConnection(time.monotonic() - 100.0))
+
+        assert app._completion_event.is_set()
+        assert "连接疑似中断" in capsys.readouterr().err
+
+    async def test_fresh_activity_does_not_trigger(self) -> None:
+        app = CLIApp("127.0.0.1", 1)
+        app._completion_event = asyncio.Event()
+        app._heartbeat_interval_ms = 1000
+
+        task = asyncio.create_task(
+            app._watch_connection(_FakeConnection(time.monotonic()))
+        )
+        await asyncio.sleep(0.05)
+        assert not app._completion_event.is_set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+class TestChatTerminalHandling:
+    """终态通知处理与 ack 前到达的缓冲。"""
+
+    async def test_completed_sets_event_and_stats(self) -> None:
+        app = CLIApp("127.0.0.1", 1)
+        app._completion_event = asyncio.Event()
+        app._awaiting_run_id = "r1"
+
+        await app._handle_completed(
+            {"run_id": "r1", "usage": {"input_tokens": 3, "output_tokens": 4}}
+        )
+
+        assert app._completion_event.is_set()
+        assert app._session_stats == {"input_tokens": 3, "output_tokens": 4}
+
+    async def test_terminal_before_ack_is_buffered(self) -> None:
+        app = CLIApp("127.0.0.1", 1)
+        app._completion_event = asyncio.Event()
+        app._awaiting_run_id = None
+
+        await app._handle_failed(
+            {"run_id": "r1", "error": {"code": -32001, "message": "boom"}}
+        )
+
+        assert app._pending_terminal is not None
+        assert not app._completion_event.is_set()
+
+    async def test_mismatched_run_ignored(self) -> None:
+        app = CLIApp("127.0.0.1", 1)
+        app._completion_event = asyncio.Event()
+        app._awaiting_run_id = "r1"
+
+        await app._handle_completed({"run_id": "other", "usage": {}})
+
+        assert not app._completion_event.is_set()

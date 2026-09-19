@@ -35,12 +35,20 @@ AwesomeClaude 的 Client 与 Core 之间使用 **JSON-RPC 2.0** 规范进行通�
 
 ### chat — LLM 对话
 
-- 类型：Request
+- 类型：Request（**受理 + 通知**模型，最终结果不在本请求响应中返回）
 - 参数：`{"message": str, "session_id": str | null, "conversation_id": str | null, "max_tokens": int | null}`（后三者可选）
   - `session_id`：多客户端共享会话时指定；服务端据此广播通知并记录会话历史
-- 响应：`{"run_id": str, "text": str, "stop_reason": str, "usage": {"input_tokens": int, "output_tokens": int, ...}, "duration_ms": float, "model": str}`
+- 受理响应：`{"run_id": str, "accepted": true, "heartbeat_interval_ms": int}`
+  - 服务端在 Run 创建成功后**立即**返回该受理应答，表示对话已被接受，不代表对话完成
+  - 非法参数（缺少 `message`）返回 `-32602`；目标会话已有在途 Run 返回 `-32004`，均不创建 Run
+- 完成/失败：对话终态通过 `chat.completed` / `chat.failed` 通知推送（见下），二者互斥且各至多一次
   - `stop_reason` 取值：`end_turn` / `max_tokens` / `stop_sequence` / `tool_use` / `max_steps`（达到最大步数）/ `unknown`
-- 流程：服务端经 AgentLoop 编排多轮 LLM 调用与工具调用（含任务计划工具 add_tasks / update_task_deps / start_task / complete_task / reopen_task / suspend_task），期间持续推送 `chat.stream`、`chat.tool_started`、`chat.tool_finished` 通知（见下）；任务清单变化时推送 `chat.plan_updated`；达到最大步数时推送 `chat.interrupted` 通知
+- 流程：服务端经 AgentLoop 编排多轮 LLM 调用与工具调用（含任务计划工具 add_tasks / update_task_deps / start_task / complete_task / reopen_task / suspend_task），期间持续推送 `chat.stream`、`chat.tool_started`、`chat.tool_finished` 通知（见下）；任务清单变化时推送 `chat.plan_updated`；Run 执行期间周期性推送 `chat.heartbeat`；达到最大步数时额外推送 `chat.interrupted` 通知
+
+```json
+{"jsonrpc": "2.0", "method": "chat", "params": {"message": "你好", "session_id": "shared-123"}, "id": 7}
+{"jsonrpc": "2.0", "result": {"run_id": "a1b2c3d4", "accepted": true, "heartbeat_interval_ms": 15000}, "id": 7}
+```
 
 ### session.attach — 订阅会话
 
@@ -137,6 +145,58 @@ Server → Client 推送，当 agent 循环达到最大步数（max_steps）但 
     "run_id": "a1b2c3d4",
     "stop_reason": "max_steps",
     "step_index": 26,
+    "session_id": "shared-123"
+  }
+}
+```
+
+## Notification：chat.completed
+
+Server → Client 推送，表示对话正常结束（含达到步数上限）。携带最终文本、停止原因、token 用量、耗时与模型。若请求带 `session_id`，则广播到会话内所有订阅连接。同一 Run 至多推送一次。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "chat.completed",
+  "params": {
+    "run_id": "a1b2c3d4",
+    "text": "最终答复",
+    "stop_reason": "end_turn",
+    "usage": {"input_tokens": 120, "output_tokens": 45},
+    "duration_ms": 3210.5,
+    "model": "claude-sonnet-4-20250514",
+    "session_id": "shared-123"
+  }
+}
+```
+
+## Notification：chat.failed
+
+Server → Client 推送，表示对话因错误终止。`error` 与 JSON-RPC 错误对象同构（至少含 `code` 与 `message`）。与 `chat.completed` 互斥，同一 Run 至多推送一次。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "chat.failed",
+  "params": {
+    "run_id": "a1b2c3d4",
+    "error": {"code": -32003, "message": "LLM 请求超时: ..."},
+    "session_id": "shared-123"
+  }
+}
+```
+
+## Notification：chat.heartbeat
+
+Server → Client 推送，在 Run 执行期间周期性发送（间隔由服务端配置，默认 15s），作为对话仍在进行、连接仍存活的证明。Run 进入终态后停止推送。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "chat.heartbeat",
+  "params": {
+    "run_id": "a1b2c3d4",
+    "timestamp": "2026-09-19T04:00:00+00:00",
     "session_id": "shared-123"
   }
 }

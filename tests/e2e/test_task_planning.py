@@ -1,5 +1,6 @@
 """端到端测试：Run 内任务计划的拆分、推进、轨迹与进度通知。"""
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -18,10 +19,12 @@ from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.methods import (
     METHOD_CHAT,
     METHOD_SESSION_ATTACH,
+    NOTIFY_CHAT_COMPLETED,
     NOTIFY_CHAT_PLAN_UPDATED,
 )
 from awesome_claude.shared.logging.trace_store import TraceStore
 from awesome_claude.shared.types import TokenUsage
+from tests.conftest import expect_chat_terminal
 
 
 class QueuedLLM:
@@ -135,10 +138,14 @@ async def test_plan_declared_advanced_and_notified(tmp_path: Path) -> None:
             plans: list[dict[str, Any]] = []
             conn.on_notification(NOTIFY_CHAT_PLAN_UPDATED, _collector(plans))
 
-            resp = await conn.send_request(
+            terminal_future = expect_chat_terminal(conn)
+            ack = await conn.send_request(
                 METHOD_CHAT, {"message": "请处理文件", "session_id": "shared"}
             )
-            assert resp["result"]["text"] == "完成"
+            assert ack["result"]["accepted"] is True
+            terminal = await asyncio.wait_for(terminal_future, timeout=2.0)
+            assert terminal["method"] == NOTIFY_CHAT_COMPLETED
+            assert terminal["params"]["text"] == "完成"
 
             # 每次任务变更各推送一次计划快照：added / started / completed
             assert len(plans) == 3

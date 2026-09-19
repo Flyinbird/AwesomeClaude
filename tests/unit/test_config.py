@@ -16,6 +16,7 @@ _ENV_KEYS = [
     "AWESOME_CLAUDE_WORKSPACE_DIR",
     "AWESOME_CLAUDE_FS_MAX_READ",
     "AWESOME_CLAUDE_FS_MAX_WRITE",
+    "AWESOME_CLAUDE_HEARTBEAT_INTERVAL",
 ]
 
 
@@ -58,6 +59,21 @@ class TestLoadServerConfig:
         assert config.max_tokens == 4096
         assert config.log_level == "INFO"
         assert config.log_dir == "logs"
+        assert config.heartbeat_interval == 15.0
+
+    def test_heartbeat_interval_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("AWESOME_CLAUDE_HEARTBEAT_INTERVAL", "2.5")
+        config = load_server_config()
+        assert config.heartbeat_interval == 2.5
+
+    def test_invalid_heartbeat_interval_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("AWESOME_CLAUDE_HEARTBEAT_INTERVAL", "fast")
+        with pytest.raises(ValueError, match="AWESOME_CLAUDE_HEARTBEAT_INTERVAL"):
+            load_server_config()
 
     def test_base_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")

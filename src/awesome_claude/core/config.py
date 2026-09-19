@@ -22,6 +22,7 @@ class ServerConfig:
     workspace_dir: Path = field(default_factory=Path.cwd)
     fs_max_read: int = 30000
     fs_max_write: int = 100000
+    heartbeat_interval: float = 15.0
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
@@ -38,14 +39,16 @@ def load_server_config() -> ServerConfig:
         https://api.deepseek.com/anthropic）、AWESOME_CLAUDE_MAX_TOKENS、
         AWESOME_CLAUDE_LOG_LEVEL、AWESOME_CLAUDE_LOG_DIR、
         AWESOME_CLAUDE_WORKSPACE_DIR（可选，文件工具沙箱根目录）、
-        AWESOME_CLAUDE_FS_MAX_READ、AWESOME_CLAUDE_FS_MAX_WRITE。
+        AWESOME_CLAUDE_FS_MAX_READ、AWESOME_CLAUDE_FS_MAX_WRITE、
+        AWESOME_CLAUDE_HEARTBEAT_INTERVAL（对话心跳间隔秒数，默认 15）。
 
     Returns:
         服务端配置。
 
     Raises:
         ValueError: 缺少必需的 ANTHROPIC_API_KEY，或 PORT/MAX_TOKENS/
-            FS_MAX_READ/FS_MAX_WRITE 不是整数。
+            FS_MAX_READ/FS_MAX_WRITE 不是整数，或 HEARTBEAT_INTERVAL
+            不是数字。
     """
     load_dotenv()
 
@@ -66,6 +69,7 @@ def load_server_config() -> ServerConfig:
         workspace_dir=Path(workspace_dir) if workspace_dir else Path.cwd(),
         fs_max_read=_env_int("AWESOME_CLAUDE_FS_MAX_READ", 30000),
         fs_max_write=_env_int("AWESOME_CLAUDE_FS_MAX_WRITE", 100000),
+        heartbeat_interval=_env_float("AWESOME_CLAUDE_HEARTBEAT_INTERVAL", 15.0),
     )
 
 
@@ -78,3 +82,14 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         raise ValueError(f"环境变量 {name} 必须是整数: {raw!r}") from None
+
+
+def _env_float(name: str, default: float) -> float:
+    """读取浮点环境变量，非法时抛出 ValueError。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"环境变量 {name} 必须是数字: {raw!r}") from None

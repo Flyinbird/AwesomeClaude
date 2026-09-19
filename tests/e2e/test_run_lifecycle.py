@@ -18,10 +18,12 @@ from awesome_claude.protocol.errors import SESSION_BUSY
 from awesome_claude.protocol.methods import (
     METHOD_CHAT,
     METHOD_SESSION_ATTACH,
+    NOTIFY_CHAT_COMPLETED,
     NOTIFY_CHAT_STREAM,
 )
 from awesome_claude.shared.logging.trace_store import TraceStore
 from awesome_claude.shared.types import TokenUsage
+from tests.conftest import expect_chat_terminal
 
 
 class GatedLLM:
@@ -158,6 +160,7 @@ async def test_concurrent_chat_rejected(tmp_path: Path) -> None:
         await c1.send_request(METHOD_SESSION_ATTACH, {"session_id": "shared"})
         await c2.send_request(METHOD_SESSION_ATTACH, {"session_id": "shared"})
 
+        terminal_future = expect_chat_terminal(c1)
         chat = asyncio.create_task(
             c1.send_request(METHOD_CHAT, {"message": "first", "session_id": "shared"})
         )
@@ -170,8 +173,11 @@ async def test_concurrent_chat_rejected(tmp_path: Path) -> None:
         assert busy["error"]["code"] == SESSION_BUSY
 
         llm.release.set()
-        first = await chat
-        assert first["result"]["text"] == "done"
+        ack = await chat
+        assert ack["result"]["accepted"] is True
+        terminal = await asyncio.wait_for(terminal_future, timeout=2.0)
+        assert terminal["method"] == NOTIFY_CHAT_COMPLETED
+        assert terminal["params"]["text"] == "done"
     finally:
         await c1.disconnect()
         await c2.disconnect()

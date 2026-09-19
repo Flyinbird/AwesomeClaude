@@ -15,7 +15,6 @@ from awesome_claude.core.session.registry import SessionRegistry
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.jsonrpc import (
     build_request,
-    decode_message,
     encode_message,
     parse_message,
 )
@@ -24,11 +23,12 @@ from awesome_claude.protocol.methods import (
     METHOD_ECHO,
     METHOD_PING,
     METHOD_SHUTDOWN,
+    NOTIFY_CHAT_COMPLETED,
     NOTIFY_CHAT_STREAM,
 )
 from awesome_claude.shared.logging.trace_store import TraceStore
 from awesome_claude.shared.types import TokenUsage
-from tests.conftest import RpcTestClient
+from tests.conftest import TERMINAL_CHAT_NOTIFICATIONS, RpcTestClient, read_until
 
 
 class FakeLLM:
@@ -122,29 +122,33 @@ async def test_e2e_chat_streams_notifications(tmp_path: Path) -> None:
         )
         await conn.writer.drain()
 
-        notifications = []
-        response = None
-        for _ in range(20):
-            raw = await conn.reader.readline()
-            if not raw:
-                break
-            msg = decode_message(raw)
-            if msg.get("method") == NOTIFY_CHAT_STREAM:
-                notifications.append(msg)
-            elif msg.get("id") == 1:
-                response = msg
-                break
+        ack = await read_until(conn.reader, lambda m: m.get("id") == 1)
+        assert ack is not None
+        assert ack["result"]["accepted"] is True
+        run_id = ack["result"]["run_id"]
+        assert ack["result"]["heartbeat_interval_ms"] == 15000
 
-        assert response is not None
-        assert response["result"]["text"] == "Hello world!"
-        assert response["result"]["stop_reason"] == "end_turn"
-        assert response["result"]["usage"]["input_tokens"] == 12
-        assert response["result"]["run_id"]
+        notifications: list[dict[str, Any]] = []
+        terminal = await read_until(
+            conn.reader,
+            lambda m: (
+                m.get("method") in TERMINAL_CHAT_NOTIFICATIONS
+                and m.get("params", {}).get("run_id") == run_id
+            ),
+            collect=notifications,
+        )
+        assert terminal is not None
+        assert terminal["method"] == NOTIFY_CHAT_COMPLETED
+        params = terminal["params"]
+        assert params["text"] == "Hello world!"
+        assert params["stop_reason"] == "end_turn"
+        assert params["usage"]["input_tokens"] == 12
+        assert params["run_id"] == run_id
 
-        assert len(notifications) == 4
-        assert all(n["method"] == NOTIFY_CHAT_STREAM for n in notifications)
-        deltas = [n for n in notifications if not n["params"]["is_final"]]
-        finals = [n for n in notifications if n["params"]["is_final"]]
+        streams = [n for n in notifications if n["method"] == NOTIFY_CHAT_STREAM]
+        assert len(streams) == 4
+        deltas = [n for n in streams if not n["params"]["is_final"]]
+        finals = [n for n in streams if n["params"]["is_final"]]
         assert [d["params"]["text"] for d in deltas] == ["Hello ", "world", "!"]
         assert len(finals) == 1
         assert finals[0]["params"]["is_final"] is True

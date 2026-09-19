@@ -1,6 +1,7 @@
 """消息接收器 - 后台读取 TCP 数据，区分 response 与 notification 并分发。"""
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -8,6 +9,7 @@ from awesome_claude.protocol.jsonrpc import JsonRpcDecodeError, decode_message
 from awesome_claude.shared.logging.app_logger import get_app_logger
 
 type NotificationHandler = Callable[[dict[str, Any]], Awaitable[None]]
+type CloseHandler = Callable[[], Awaitable[None]]
 
 
 class MessageReceiver:
@@ -22,21 +24,31 @@ class MessageReceiver:
         self._reader = reader
         self._response_futures: dict[int, asyncio.Future] = {}
         self._notification_handlers: dict[str, list[NotificationHandler]] = {}
+        self._close_handlers: list[CloseHandler] = []
         self._running = False
+        self._stopping = False
         self._task: asyncio.Task[None] | None = None
+        self._last_activity = time.monotonic()
         self._logger = get_app_logger("client.receiver")
+
+    @property
+    def last_activity(self) -> float:
+        """最近一次收到服务端消息的单调时钟时间。"""
+        return self._last_activity
 
     async def start(self) -> None:
         """启动后台 reader task。"""
         if self._running:
             return
         self._running = True
+        self._last_activity = time.monotonic()
         self._task = asyncio.create_task(self._read_loop())
 
     async def stop(self) -> None:
         """停止 reader task 并清理未完成的 response future。"""
         if not self._running:
             return
+        self._stopping = True
         self._running = False
         if self._task is not None:
             self._task.cancel()
@@ -53,10 +65,18 @@ class MessageReceiver:
         """注册 notification 处理器（同一方法可注册多个）。
 
         Args:
-            method: notification 方法名。
+            method: 通知方法名。
             handler: 异步处理器，接收 params。
         """
         self._notification_handlers.setdefault(method, []).append(handler)
+
+    def on_close(self, handler: CloseHandler) -> None:
+        """注册连接被服务端关闭时的回调（可注册多个）。
+
+        Args:
+            handler: 无参异步回调，在读取循环因连接关闭而退出时调用。
+        """
+        self._close_handlers.append(handler)
 
     async def wait_for_response(
         self, request_id: int, timeout: float = 60.0
@@ -88,6 +108,7 @@ class MessageReceiver:
                 raw = await self._reader.readline()
                 if not raw:
                     break
+                self._last_activity = time.monotonic()
                 line = raw.strip()
                 if not line:
                     continue
@@ -110,6 +131,16 @@ class MessageReceiver:
                 if not future.done():
                     future.set_exception(ConnectionError("服务端连接已关闭"))
             self._response_futures.clear()
+            if not self._stopping:
+                await self._notify_close()
+
+    async def _notify_close(self) -> None:
+        """调用连接关闭回调，单个失败不影响其余。"""
+        for handler in list(self._close_handlers):
+            try:
+                await handler()
+            except Exception:
+                self._logger.exception("close handler failed")
 
     async def _dispatch_response(self, msg: dict[str, Any]) -> None:
         """将 response 交给对应 id 的等待者。"""

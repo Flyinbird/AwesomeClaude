@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from awesome_claude.client.transport.receiver import MessageReceiver
+from awesome_claude.client.transport.receiver import CloseHandler, MessageReceiver
 from awesome_claude.protocol.jsonrpc import build_request, encode_message
 from awesome_claude.shared.logging.app_logger import get_app_logger
 
@@ -33,6 +33,13 @@ class ClientConnection:
     def connected(self) -> bool:
         """连接是否已建立。"""
         return self._writer is not None and not self._writer.is_closing()
+
+    @property
+    def last_activity(self) -> float | None:
+        """最近一次收到服务端消息的单调时钟时间（未连接时为 None）。"""
+        if self._receiver is None:
+            return None
+        return self._receiver.last_activity
 
     async def connect(self) -> None:
         """建立 TCP 连接并启动 MessageReceiver。"""
@@ -97,3 +104,16 @@ class ClientConnection:
         if self._receiver is None:
             raise ConnectionError("client 未连接")
         self._receiver.on_notification(method, handler)
+
+    def on_disconnect(self, handler: CloseHandler) -> None:
+        """注册连接被服务端关闭时的回调。
+
+        Args:
+            handler: 无参异步回调。
+
+        Raises:
+            ConnectionError: 未连接。
+        """
+        if self._receiver is None:
+            raise ConnectionError("client 未连接")
+        self._receiver.on_close(handler)

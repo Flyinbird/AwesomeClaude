@@ -22,9 +22,14 @@ from awesome_claude.protocol.jsonrpc import (
     decode_message,
     encode_message,
 )
-from awesome_claude.protocol.methods import METHOD_CHAT, METHOD_PING
+from awesome_claude.protocol.methods import (
+    METHOD_CHAT,
+    METHOD_PING,
+    NOTIFY_CHAT_COMPLETED,
+)
 from awesome_claude.shared.logging.trace_store import TraceStore
 from awesome_claude.shared.types import TokenUsage
+from tests.conftest import TERMINAL_CHAT_NOTIFICATIONS
 
 
 class GatedLLM:
@@ -129,6 +134,21 @@ async def _read_until_final_stream(
     return await asyncio.wait_for(_loop(), timeout=timeout)
 
 
+async def _read_until_terminal(
+    reader: asyncio.StreamReader, *, timeout: float = 2.0
+) -> dict[str, Any] | None:
+    async def _loop() -> dict[str, Any] | None:
+        while True:
+            raw = await reader.readline()
+            if not raw:
+                return None
+            msg = decode_message(raw)
+            if msg.get("method") in TERMINAL_CHAT_NOTIFICATIONS:
+                return msg
+
+    return await asyncio.wait_for(_loop(), timeout=timeout)
+
+
 async def _wait_for(predicate: Any, timeout: float = 2.0) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
@@ -170,9 +190,10 @@ class TestReadLoopDecoupling:
             assert not llm.release.is_set()
 
             llm.release.set()
-            chat = await _read_until_response(reader, 1)
-            assert chat is not None
-            assert chat["result"]["text"] == "done"
+            terminal = await _read_until_terminal(reader)
+            assert terminal is not None
+            assert terminal["method"] == NOTIFY_CHAT_COMPLETED
+            assert terminal["params"]["text"] == "done"
         finally:
             writer.close()
             await writer.wait_closed()
@@ -353,21 +374,24 @@ class TestSessionBusy:
             assert session.active_run.is_active
 
             llm.release.set()
-            first = await _read_until_response(reader, 2)
-            assert first is not None
-            assert first["result"]["text"] == "done"
+            terminal = await _read_until_terminal(reader)
+            assert terminal is not None
+            assert terminal["params"]["text"] == "done"
 
             writer.write(
                 encode_message(
                     build_request(
-                        METHOD_CHAT, {"message": "again", "session_id": "s"}, 3
+                        METHOD_CHAT, {"message": "again", "session_id": "s"}, 4
                     )
                 )
             )
             await writer.drain()
-            second = await _read_until_response(reader, 3)
-            assert second is not None
-            assert second["result"]["text"] == "done"
+            ack = await _read_until_response(reader, 4)
+            assert ack is not None
+            assert ack["result"]["accepted"] is True
+            terminal2 = await _read_until_terminal(reader)
+            assert terminal2 is not None
+            assert terminal2["params"]["text"] == "done"
         finally:
             writer.close()
             await writer.wait_closed()
@@ -446,16 +470,22 @@ class TestSessionBusy:
             assert session is not None
             assert session.active_run is not None
 
-            llm.release.set()
             resp1 = await _read_until_response(r1, 3)
             resp2 = await _read_until_response(r2, 4)
             responses = [resp1, resp2]
             errors = [r for r in responses if r is not None and "error" in r]
-            results = [r for r in responses if r is not None and "result" in r]
+            acks = [r for r in responses if r is not None and "result" in r]
             assert len(errors) == 1
             assert errors[0]["error"]["code"] == SESSION_BUSY
-            assert len(results) == 1
-            assert results[0]["result"]["text"] == "done"
+            assert len(acks) == 1
+            assert acks[0]["result"]["accepted"] is True
+
+            winner = r1 if resp1 is acks[0] else r2
+            llm.release.set()
+            terminal = await _read_until_terminal(winner)
+            assert terminal is not None
+            assert terminal["method"] == NOTIFY_CHAT_COMPLETED
+            assert terminal["params"]["text"] == "done"
         finally:
             w1.close()
             w2.close()
@@ -549,6 +579,9 @@ class TestEphemeralSession:
                 encode_message(build_request(METHOD_CHAT, {"message": "hi"}, 1))
             )
             await writer.drain()
+            ack = await _read_until_response(reader, 1)
+            assert ack is not None
+            assert ack["result"]["accepted"] is True
             await asyncio.wait_for(llm.started.wait(), timeout=2.0)
 
             ephemeral = [s for s in registry._sessions.values() if s.ephemeral]
@@ -556,9 +589,9 @@ class TestEphemeralSession:
             assert ephemeral[0].active_run is not None
 
             llm.release.set()
-            response = await _read_until_response(reader, 1)
-            assert response is not None
-            assert response["result"]["text"] == "done"
+            terminal = await _read_until_terminal(reader)
+            assert terminal is not None
+            assert terminal["params"]["text"] == "done"
 
             await _wait_for(
                 lambda: not any(s.ephemeral for s in registry._sessions.values())

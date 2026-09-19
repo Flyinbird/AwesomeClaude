@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import sys
+import time
 import uuid
 from typing import Any
 
@@ -13,6 +15,9 @@ from awesome_claude.protocol.methods import (
     METHOD_ECHO,
     METHOD_PING,
     METHOD_SESSION_ATTACH,
+    NOTIFY_CHAT_COMPLETED,
+    NOTIFY_CHAT_FAILED,
+    NOTIFY_CHAT_HEARTBEAT,
     NOTIFY_CHAT_INTERRUPTED,
     NOTIFY_CHAT_PLAN_UPDATED,
     NOTIFY_CHAT_STREAM,
@@ -68,11 +73,15 @@ class CLIApp:
         self._connection: ClientConnection | None = None
         self._renderer = StreamRenderer()
         self._session_stats: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
-        self._active_run_id: str | None = None
+        self._awaiting_run_id: str | None = None
+        self._pending_terminal: tuple[str, dict[str, Any]] | None = None
+        self._completion_event: asyncio.Event | None = None
+        self._heartbeat_interval_ms = 15000
         self._logger = get_app_logger("client.cli")
 
     async def run(self) -> None:
         """主循环：连接 → 注册通知 → attach 会话 → REPL。"""
+        self._completion_event = asyncio.Event()
         conn = ClientConnection(self._host, self._port)
         self._connection = conn
         try:
@@ -97,13 +106,17 @@ class CLIApp:
             await conn.disconnect()
 
     def _register_notifications(self, conn: ClientConnection) -> None:
-        """注册各类通知处理器。"""
+        """注册各类通知处理器与连接关闭回调。"""
         conn.on_notification(NOTIFY_CHAT_STREAM, self._handle_stream_notification)
+        conn.on_notification(NOTIFY_CHAT_COMPLETED, self._handle_completed)
+        conn.on_notification(NOTIFY_CHAT_FAILED, self._handle_failed)
+        conn.on_notification(NOTIFY_CHAT_HEARTBEAT, self._handle_heartbeat)
         conn.on_notification(NOTIFY_CHAT_USER_MESSAGE, self._handle_user_message)
         conn.on_notification(NOTIFY_CHAT_TOOL_STARTED, self._handle_tool_started)
         conn.on_notification(NOTIFY_CHAT_TOOL_FINISHED, self._handle_tool_finished)
         conn.on_notification(NOTIFY_CHAT_INTERRUPTED, self._handle_interrupted)
         conn.on_notification(NOTIFY_CHAT_PLAN_UPDATED, self._handle_plan_updated)
+        conn.on_disconnect(self._handle_disconnect)
 
     async def _attach(self, conn: ClientConnection) -> None:
         """订阅到会话并回放历史。"""
@@ -122,16 +135,53 @@ class CLIApp:
             self._renderer.render_history(history)
 
     async def _handle_stream_notification(self, params: dict[str, Any]) -> None:
-        """处理 chat.stream 通知并渲染流式文本（按 run_id 区分 Run）。"""
-        run_id = params.get("run_id")
-        is_final = params.get("is_final")
-        if not is_final:
-            if run_id is not None and run_id != self._active_run_id:
-                self._active_run_id = run_id
+        """处理 chat.stream 通知并渲染流式文本（终态由完成通知决定）。"""
+        if not params.get("is_final"):
             self._renderer.render_chunk(str(params.get("text", "")))
         else:
             self._renderer.render_done()
-            self._active_run_id = None
+
+    async def _handle_completed(self, params: dict[str, Any]) -> None:
+        """处理 chat.completed：渲染摘要并结束本轮等待。"""
+        run_id = params.get("run_id")
+        if self._awaiting_run_id is None:
+            self._pending_terminal = (NOTIFY_CHAT_COMPLETED, params)
+            return
+        if run_id != self._awaiting_run_id:
+            return
+        self._renderer.render_summary(params)
+        self._accumulate_stats(params)
+        self._finish_run()
+
+    async def _handle_failed(self, params: dict[str, Any]) -> None:
+        """处理 chat.failed：渲染错误并结束本轮等待。"""
+        run_id = params.get("run_id")
+        if self._awaiting_run_id is None:
+            self._pending_terminal = (NOTIFY_CHAT_FAILED, params)
+            return
+        if run_id != self._awaiting_run_id:
+            return
+        error = params.get("error")
+        if isinstance(error, dict):
+            self._renderer.render_error(error)
+        else:
+            print(f"对话失败: {error}")
+        self._finish_run()
+
+    async def _handle_heartbeat(self, params: dict[str, Any]) -> None:
+        """处理 chat.heartbeat：入站活动已由接收器记录，无需额外渲染。"""
+        self._logger.debug("chat heartbeat", run_id=params.get("run_id"))
+
+    async def _handle_disconnect(self) -> None:
+        """服务端关闭连接：结束在途等待并提示。"""
+        if self._awaiting_run_id is not None:
+            print("\n⚠️ 与服务端的连接已关闭", file=sys.stderr)
+            self._finish_run()
+
+    def _finish_run(self) -> None:
+        """标记当前对话等待结束。"""
+        if self._completion_event is not None:
+            self._completion_event.set()
 
     async def _handle_user_message(self, params: dict[str, Any]) -> None:
         """渲染其他客户端广播的用户输入。"""
@@ -193,9 +243,13 @@ class CLIApp:
             return False
 
     async def _send_chat(self, message: str, conn: ClientConnection) -> bool:
-        """发送 chat 请求；响应到达时已渲染完流式文本，随后展示摘要。"""
+        """发起 chat 并等待终态通知；受理后不再对对话施加总时长限制。"""
         if not message:
             return True
+        assert self._completion_event is not None
+        self._completion_event.clear()
+        self._pending_terminal = None
+        self._awaiting_run_id = None
         try:
             resp = await conn.send_request(
                 METHOD_CHAT, {"message": message, "session_id": self._session_id}
@@ -205,10 +259,49 @@ class CLIApp:
             return False
         if "error" in resp:
             self._renderer.render_error(resp["error"])
-        else:
-            self._renderer.render_summary(resp["result"])
-            self._accumulate_stats(resp["result"])
+            return True
+
+        result = resp.get("result", {})
+        run_id = str(result.get("run_id", ""))
+        self._heartbeat_interval_ms = max(
+            int(result.get("heartbeat_interval_ms", 15000)), 1
+        )
+        self._awaiting_run_id = run_id
+
+        if self._pending_terminal is not None:
+            method, params = self._pending_terminal
+            self._pending_terminal = None
+            if method == NOTIFY_CHAT_COMPLETED:
+                await self._handle_completed(params)
+            else:
+                await self._handle_failed(params)
+
+        await self._wait_for_completion(conn)
+        self._awaiting_run_id = None
+        self._pending_terminal = None
         return True
+
+    async def _wait_for_completion(self, conn: ClientConnection) -> None:
+        """等待终态通知，并以心跳看门狗监测连接存活。"""
+        assert self._completion_event is not None
+        watchdog = asyncio.create_task(self._watch_connection(conn))
+        try:
+            await self._completion_event.wait()
+        finally:
+            watchdog.cancel()
+            await asyncio.gather(watchdog, return_exceptions=True)
+
+    async def _watch_connection(self, conn: ClientConnection) -> None:
+        """超过 3× 心跳间隔未收到任何入站消息时提示连接疑似中断。"""
+        interval = max(self._heartbeat_interval_ms / 1000.0, 0.1)
+        threshold = interval * 3
+        while True:
+            await asyncio.sleep(interval)
+            last = conn.last_activity
+            if last is None or (time.monotonic() - last) >= threshold:
+                print("\n⚠️ 连接疑似中断（长时间未收到服务端数据）", file=sys.stderr)
+                self._finish_run()
+                return
 
     def _render_result(self, resp: dict[str, Any]) -> None:
         """渲染普通 request-response 结果。"""

@@ -89,23 +89,29 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 用户输入 "你好"
   → client/cli/app.py 判定为 chat 输入
   → connection.send_request("chat", {"message": "你好", "session_id": "…"})   # id=N
-  → core/session 收到请求 → dispatcher.dispatch("chat", params, context)
-  → handle_chat:
-      1. recorder.run_created()          → run_id + RUN_CREATED 写入 JSONL
-      2. record_stage(CONTEXT_BUILT)     → 构建上下文
-      3. （若带 session_id）channel.attach(session_id) 订阅会话
-      4. agent_loop.run(message, on_event, on_step)
-          └─ 每轮 step：
-             on_step(StepStarted) → record_stage(STEP_STARTED / LLM_REQUEST_SENT / LLM_STREAMING, step_index)
-             on_event(TextDeltaEvent) → broadcast("chat.stream", {…, is_final:false})
-             on_step(ToolStarted/ToolFinished) → record_stage(TOOL_*) + broadcast("chat.tool_*")
-             on_step(StepFinished) → record_stage(LLM_RESPONSE_DONE, step_index)
-      5. broadcast("chat.stream", {…, is_final:true})  → 流结束
-      6. （若带 session_id）channel.record_turn(user, assistant, run_id) 记录会话历史
-      7. recorder.run_completed() / ChatResponse 返回
-  → session 回写 response（含 run_id / text / usage / duration_ms / model）
-  → client 收到 → render_summary() 显示 tokens / 耗时 / run_id
+  → core/server/session._start_chat:
+      1. 建 Run + recorder.run_created()  → RUN_CREATED 写入 JSONL
+      2. 立即回写受理 ack（run_id / accepted / heartbeat_interval_ms）→ client 解除阻塞
+      3. 启动心跳任务（每 heartbeat_interval 推送 chat.heartbeat）
+      4. 异步派发 handle_chat：
+           a. record_stage(CONTEXT_BUILT)  → 构建上下文
+           b. （若带 session_id）channel.attach(session_id) 订阅会话
+           c. agent_loop.run(message, on_event, on_step)
+               └─ 每轮 step：
+                  on_step(StepStarted) → record_stage(STEP_STARTED / LLM_REQUEST_SENT / LLM_STREAMING, step_index)
+                  on_event(TextDeltaEvent) → broadcast("chat.stream", {…, is_final:false})
+                  on_step(ToolStarted/ToolFinished) → record_stage(TOOL_*) + broadcast("chat.tool_*")
+                  on_step(StepFinished) → record_stage(LLM_RESPONSE_DONE, step_index)
+           d. broadcast("chat.stream", {…, is_final:true})  → 流结束
+           e. （若带 session_id）channel.record_turn(user, assistant, run_id) 记录会话历史
+           f. recorder.run_completed() / run_interrupted() / run_failed()
+      5. session 停心跳后广播终态：
+           chat.completed（含 run_id / text / stop_reason / usage / duration_ms / model）
+           或 chat.failed（含 run_id / error）
+  → client 收到终态通知 → render_summary()（或 render_error()）显示 tokens / 耗时 / run_id
 ```
+
+无 session_id 时完成/失败/心跳通知单播发起连接；带 session_id 时扇出会话内全部订阅者。
 
 ## 执行轨迹阶段
 
@@ -145,7 +151,7 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 ## 连接生命周期
 
 - 连接读循环与请求执行解耦：ping / echo / session.* / shutdown 等控制类请求按到达顺序内联处理；仅 `chat` 作为 Run 异步执行，使读循环在对话期间仍能受理消息并及时感知断开。
-- 连接发送串行化：每个连接持有发送锁与关闭标志，统一处理并发写入（控制响应、Run 最终响应、会话广播），连接关闭后的发送被安全丢弃。
+- 连接发送串行化：每个连接持有发送锁与关闭标志，统一处理并发写入（控制响应、受理 ack、对话终态与心跳等会话广播），连接关闭后的发送被安全丢弃。
 - 服务端优雅退出：关闭流程先取消全部在途 Run 并落地终态，再取消连接任务，避免连接任务被取消后二次打断 Run 清理。
 
 ## 架构约束

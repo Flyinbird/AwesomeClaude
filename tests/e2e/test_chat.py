@@ -1,5 +1,6 @@
 """端到端测试：ClientConnection ↔ CoreServer 完整链路（含 chat 流式）。"""
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -22,10 +23,13 @@ from awesome_claude.protocol.methods import (
     METHOD_CHAT,
     METHOD_ECHO,
     METHOD_PING,
+    NOTIFY_CHAT_COMPLETED,
+    NOTIFY_CHAT_FAILED,
     NOTIFY_CHAT_STREAM,
 )
 from awesome_claude.shared.logging.trace_store import TraceStore
 from awesome_claude.shared.types import TokenUsage
+from tests.conftest import expect_chat_terminal
 
 
 class FakeLLM:
@@ -128,15 +132,19 @@ async def test_chat_full_flow(tmp_path: Path) -> None:
         await conn.connect()
         try:
             conn.on_notification(NOTIFY_CHAT_STREAM, make_collector(notifications))
-            resp = await conn.send_request(METHOD_CHAT, {"message": "hi"})
+            terminal_future = expect_chat_terminal(conn)
+            ack = await conn.send_request(METHOD_CHAT, {"message": "hi"})
+            assert ack["result"]["accepted"] is True
+            run_id = ack["result"]["run_id"]
 
-            assert "error" not in resp
-            result = resp["result"]
+            terminal = await asyncio.wait_for(terminal_future, timeout=2.0)
+            assert terminal["method"] == NOTIFY_CHAT_COMPLETED
+            result = terminal["params"]
             assert result["text"] == "你好，世界"
             assert result["stop_reason"] == "end_turn"
             assert result["usage"]["input_tokens"] == 5
             assert result["usage"]["output_tokens"] == 8
-            assert result["run_id"]
+            assert result["run_id"] == run_id
             assert result["model"] == "m"
 
             assert len(notifications) == 4
@@ -170,9 +178,12 @@ async def test_trace_logs_full_lifecycle(tmp_path: Path) -> None:
         conn = ClientConnection(*server.bound_addr)
         await conn.connect()
         try:
-            resp = await conn.send_request(METHOD_CHAT, {"message": "hello"})
-            run_id = resp["result"]["run_id"]
+            terminal_future = expect_chat_terminal(conn)
+            ack = await conn.send_request(METHOD_CHAT, {"message": "hello"})
+            run_id = ack["result"]["run_id"]
             assert len(run_id) == 8
+            terminal = await asyncio.wait_for(terminal_future, timeout=2.0)
+            assert terminal["method"] == NOTIFY_CHAT_COMPLETED
         finally:
             await conn.disconnect()
     finally:
@@ -202,9 +213,12 @@ async def test_llm_failure_records_run_failed(tmp_path: Path) -> None:
         conn = ClientConnection(*server.bound_addr)
         await conn.connect()
         try:
-            resp = await conn.send_request(METHOD_CHAT, {"message": "hi"})
-            assert "error" in resp
-            assert resp["error"]["code"] == LLM_AUTH_ERROR
+            terminal_future = expect_chat_terminal(conn)
+            ack = await conn.send_request(METHOD_CHAT, {"message": "hi"})
+            assert ack["result"]["accepted"] is True
+            terminal = await asyncio.wait_for(terminal_future, timeout=2.0)
+            assert terminal["method"] == NOTIFY_CHAT_FAILED
+            assert terminal["params"]["error"]["code"] == LLM_AUTH_ERROR
         finally:
             await conn.disconnect()
     finally:

@@ -17,11 +17,13 @@ from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.protocol.methods import (
     METHOD_CHAT,
     METHOD_SESSION_ATTACH,
+    NOTIFY_CHAT_COMPLETED,
     NOTIFY_CHAT_STREAM,
     NOTIFY_CHAT_USER_MESSAGE,
 )
 from awesome_claude.shared.logging.trace_store import TraceStore
 from awesome_claude.shared.types import TokenUsage
+from tests.conftest import expect_chat_terminal
 
 
 class FakeLLM:
@@ -102,10 +104,14 @@ async def test_two_clients_share_session_stream(tmp_path: Path) -> None:
             c1.on_notification(NOTIFY_CHAT_USER_MESSAGE, _collector(user1))
             c2.on_notification(NOTIFY_CHAT_USER_MESSAGE, _collector(user2))
 
-            resp = await c1.send_request(
+            terminal_future = expect_chat_terminal(c1)
+            ack = await c1.send_request(
                 METHOD_CHAT, {"message": "hello", "session_id": "shared"}
             )
-            assert resp["result"]["text"] == "hi"
+            assert ack["result"]["accepted"] is True
+            terminal = await asyncio.wait_for(terminal_future, timeout=2.0)
+            assert terminal["method"] == NOTIFY_CHAT_COMPLETED
+            assert terminal["params"]["text"] == "hi"
 
             await _wait_for(lambda: len(stream1) == 2 and len(stream2) == 2)
 
@@ -130,10 +136,13 @@ async def test_attach_replays_history(tmp_path: Path) -> None:
         await c1.connect()
         try:
             await c1.send_request(METHOD_SESSION_ATTACH, {"session_id": "shared"})
-            resp = await c1.send_request(
+            terminal_future = expect_chat_terminal(c1)
+            ack = await c1.send_request(
                 METHOD_CHAT, {"message": "hello", "session_id": "shared"}
             )
-            assert resp["result"]["text"] == "hi"
+            assert ack["result"]["accepted"] is True
+            terminal = await asyncio.wait_for(terminal_future, timeout=2.0)
+            assert terminal["params"]["text"] == "hi"
         finally:
             await c1.disconnect()
 

@@ -5,6 +5,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 from awesome_claude.core.observability.trace_recorder import TraceRecorder
@@ -33,7 +34,13 @@ from awesome_claude.protocol.jsonrpc import (
     encode_message,
     parse_message,
 )
-from awesome_claude.protocol.methods import METHOD_CHAT, METHOD_SHUTDOWN
+from awesome_claude.protocol.methods import (
+    METHOD_CHAT,
+    METHOD_SHUTDOWN,
+    NOTIFY_CHAT_COMPLETED,
+    NOTIFY_CHAT_FAILED,
+    NOTIFY_CHAT_HEARTBEAT,
+)
 from awesome_claude.shared.logging.app_logger import get_app_logger
 
 type ContextFactory = Callable[[SessionChannel], HandlerContext]
@@ -225,6 +232,15 @@ class ClientSession:
             )
             return
 
+        await self._send_result(
+            {
+                "run_id": run_id,
+                "accepted": True,
+                "heartbeat_interval_ms": int(context.config.heartbeat_interval * 1000),
+            },
+            parsed.id,
+        )
+
         task = asyncio.create_task(self._execute_chat(parsed, context, run, session))
         run.set_task(task)
         self._runs.add(run)
@@ -237,11 +253,53 @@ class ClientSession:
         run: Run,
         session: Session,
     ) -> None:
-        """执行对话 Run 并回写最终响应，保证会话引用被清理。"""
+        """执行对话 Run，按结果广播终态通知并保证会话引用被清理。
+
+        受理应答已在 `_start_chat` 回写，本方法不再向该请求回写响应；
+        成功广播 `chat.completed`，失败（含内部异常兜底）广播
+        `chat.failed`。执行期间由后台任务周期性推送 `chat.heartbeat`。
+        """
         cancelled = False
+        heartbeat_task: asyncio.Task[None] | None = None
+
+        async def emit(method: str, payload: dict[str, Any]) -> None:
+            """按会话可见性投递：命名会话扇出，临时会话单播发起连接。"""
+            if session.ephemeral:
+                sink = run.initiator.sink if run.initiator is not None else None
+                if sink is not None:
+                    await sink.send(method, payload)
+            else:
+                await context.sessions.broadcast_to(session.session_id, method, payload)
+
+        async def heartbeat_loop() -> None:
+            """Run 执行期间周期性推送心跳，终态后停止。"""
+            interval = max(context.config.heartbeat_interval, 0.1)
+            while True:
+                await asyncio.sleep(interval)
+                if run.is_terminal:
+                    return
+                await emit(
+                    NOTIFY_CHAT_HEARTBEAT,
+                    {
+                        "run_id": run.run_id,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "session_id": session.session_id,
+                    },
+                )
+
+        async def stop_heartbeat() -> None:
+            """取消并等待心跳任务结束。"""
+            nonlocal heartbeat_task
+            if heartbeat_task is None:
+                return
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+            heartbeat_task = None
+
         try:
             if run.is_terminal:
                 return
+            heartbeat_task = asyncio.create_task(heartbeat_loop())
             request_context = replace(context, run=run)
             try:
                 result = await self._dispatcher.dispatch(
@@ -252,11 +310,27 @@ class ClientSession:
             except Exception:
                 self._logger.exception("dispatch failed for method %s", parsed.method)
                 result = build_error_response(None, INTERNAL_ERROR, "Internal error")
-            await self._send_result(result, parsed.id)
+
+            await stop_heartbeat()
+
+            if isinstance(result, dict) and "error" in result:
+                await emit(
+                    NOTIFY_CHAT_FAILED,
+                    {
+                        "run_id": run.run_id,
+                        "error": result["error"],
+                        "session_id": session.session_id,
+                    },
+                )
+            else:
+                payload = dict(result)
+                payload["session_id"] = session.session_id
+                await emit(NOTIFY_CHAT_COMPLETED, payload)
         except asyncio.CancelledError:
             cancelled = True
             raise
         finally:
+            await stop_heartbeat()
             if session.active_run is run:
                 session.active_run = None
             if session.ephemeral:

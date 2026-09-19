@@ -101,6 +101,7 @@ awesome-claude/
 - **HandlerFunc**：`Callable[[dict | None, HandlerContext], Awaitable[dict]]`。handler 返回**结果 dict**；出错时返回含 `"error"` 键的错误响应 dict（`build_error_response`），session 负责补全 `id`。
 - **方法注册**：handler 用 `@register_handler(METHOD_X)` 装饰；`create_dispatcher()` 显式注册 ping/echo/shutdown/chat/session.attach/session.detach 六个方法。
 - **Agent Loop**：`AgentLoop` 编排多轮 LLM + 工具调用；chat handler 委托 `agent_loop.run()`，通过 `on_event`（LLM 流式事件）与 `on_step`（step/tool 结构事件）回调转为 `chat.stream` / `chat.tool_*` 通知并记录 Run 轨迹阶段。
+- **对话受理与终态通知**：`chat` 为「受理 + 通知」模型——`ClientSession._start_chat` 在 Run 创建成功后立即回受理 ack（`run_id` / `accepted` / `heartbeat_interval_ms`），最终结果不再走该请求响应；`_execute_chat` 停心跳后广播 `chat.completed`（含 text/usage/duration_ms/model）或 `chat.failed`（含 error），执行期间周期性推送 `chat.heartbeat`。命名会话扇出全部订阅者，临时会话单播发起连接。客户端收 ack 后以 completion Event 等待、无网络 deadline，并以 3× 心跳间隔做看门狗。
 - **工具执行上下文（ToolContext / ToolScope）**：`ToolHandler` 签名为 `Callable[[dict, ToolContext, ToolScope | None], Awaitable[Any]]`。`ToolContext` 是进程级环境（workspace_root + fs 读写限额），启动时构造一次、不随对话变化；`ToolScope` 是 per-Run 运行态（`run_id` + `task_graph`），经 `AgentLoop.run(scope=...)` → `ToolRegistry.execute(name, args, scope)` 显式传入。后续环境能力扩展 `ToolContext`，运行态能力扩展 `ToolScope`。
 - **文件工具沙箱**：内置 fs 工具的路径参数统一做 realpath 解析（含符号链接）后必须落在 `workspace_root` 内，越界抛 `PathOutsideRootError`；只处理 UTF-8 文本（二进制/含空字节拒绝）；`write_file` 不自动创建父目录、超出 `fs_max_write` 拒绝；`edit_file` 要求 `old_string` 唯一匹配；`read_file` 超出 `fs_max_read` 截断并标记。
 - **多客户端会话**：`SessionRegistry` 维护 `session_id → Session`（订阅连接集合 + 对话历史 + 至多一个在途 Run）。客户端经 `session.attach` 订阅，`SessionChannel.broadcast` 在已订阅时扇出到会话内所有连接，未订阅时单播（向后兼容）；`broadcast_to` 可显式指定会话。
@@ -133,6 +134,7 @@ awesome-claude/
 | `AWESOME_CLAUDE_WORKSPACE_DIR` | | 进程启动 cwd | 文件工具沙箱根目录 |
 | `AWESOME_CLAUDE_FS_MAX_READ` | | `30000` | 单次读取字节上限 |
 | `AWESOME_CLAUDE_FS_MAX_WRITE` | | `100000` | 单次写入字节上限 |
+| `AWESOME_CLAUDE_HEARTBEAT_INTERVAL` | | `15` | 对话心跳间隔（秒）；客户端以 3× 作为连接看门狗阈值 |
 
 ## 架构约束
 - `core/` 和 `client/` 只能通过 `protocol/` 中定义的接口通信，不能直接互相 import
