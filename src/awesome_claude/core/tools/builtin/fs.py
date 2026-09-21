@@ -135,6 +135,8 @@ async def _read_file_handler(
     args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
 ) -> dict[str, Any]:
     """读取文本文件。参数 path 必填，offset/limit 可选。"""
+    if "path" not in args:
+        raise ValueError("缺少必需参数 path")
     offset = args.get("offset", 0)
     limit = args.get("limit")
     if isinstance(offset, bool) or not isinstance(offset, int):
@@ -178,6 +180,10 @@ async def _write_file_handler(
     args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
 ) -> dict[str, Any]:
     """写入文本文件（覆盖已存在文件）。参数 path、content 必填。"""
+    if "path" not in args:
+        raise ValueError("缺少必需参数 path")
+    if "content" not in args:
+        raise ValueError("缺少必需参数 content")
     content = args.get("content")
     if not isinstance(content, str):
         raise TypeError("content 必须是字符串")
@@ -191,6 +197,12 @@ async def _edit_file_handler(
     args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
 ) -> dict[str, Any]:
     """精确字符串替换；old_string 必须在文件中唯一出现。"""
+    if "path" not in args:
+        raise ValueError("缺少必需参数 path")
+    if "old_string" not in args:
+        raise ValueError("缺少必需参数 old_string")
+    if "new_string" not in args:
+        raise ValueError("缺少必需参数 new_string")
     old_string = args.get("old_string")
     new_string = args.get("new_string")
     if not isinstance(old_string, str):

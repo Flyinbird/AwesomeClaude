@@ -33,7 +33,8 @@ awesome-claude/
 │       │   ├── app.py          # 应用装配与启动（run_server）
 │       │   ├── config.py       # ServerConfig + load_server_config()
 │       │   ├── agent/          # Agent 运行时
-│       │   │   ├── loop.py         # AgentLoop：多轮 LLM + 工具编排
+│       │   │   ├── loop.py         # AgentLoop：多轮 LLM + 工具编排（含截断工具调用跳过）
+│       │   │   ├── prompt.py       # System Prompt 构造（PromptContext / build_system_prompt / PROMPT_VERSION）
 │       │   │   ├── events.py       # StepStarted/StepFinished/ToolStarted/ToolFinished
 │       │   │   └── result.py       # AgentResult
 │       │   ├── tools/         # 工具抽象
@@ -97,10 +98,11 @@ awesome-claude/
 ```
 **注意，项目结构并非一层不变，随着项目迭代，项目结构也需要迭代**
 ## 核心概念
-- **HandlerContext**：传给 handler 的运行时上下文，含 `trace_store`、`llm_client`、`sessions`（SessionChannel，多客户端会话广播）、`config`、`agent_loop`、`run`（当前对话 Run，非对话请求为 None）。由 ClientSession 每连接创建一次（注入绑定到该连接的 `SessionChannel`），chat 请求经 `dataclasses.replace` 注入当次 Run（Run 携带其 `TraceRecorder`）。
+- **HandlerContext**：传给 handler 的运行时上下文，含 `trace_store`、`llm_client`、`sessions`（SessionChannel，多客户端会话广播）、`config`、`agent_loop`、`run`（当前对话 Run，非对话请求为 None）、`system_prompt`（`PromptContext`，System Prompt 静态上下文）。由 ClientSession 每连接创建一次（注入绑定到该连接的 `SessionChannel`），chat 请求经 `dataclasses.replace` 注入当次 Run（Run 携带其 `TraceRecorder`）。
 - **HandlerFunc**：`Callable[[dict | None, HandlerContext], Awaitable[dict]]`。handler 返回**结果 dict**；出错时返回含 `"error"` 键的错误响应 dict（`build_error_response`），session 负责补全 `id`。
 - **方法注册**：handler 用 `@register_handler(METHOD_X)` 装饰；`create_dispatcher()` 显式注册 ping/echo/shutdown/chat/session.attach/session.detach 六个方法。
 - **Agent Loop**：`AgentLoop` 编排多轮 LLM + 工具调用；chat handler 委托 `agent_loop.run()`，通过 `on_event`（LLM 流式事件）与 `on_step`（step/tool 结构事件）回调转为 `chat.stream` / `chat.tool_*` 通知并记录 Run 轨迹阶段。
+- **System Prompt 与截断自愈**：`core/agent/prompt.py::build_system_prompt(PromptContext)` 按「身份准则 + 动态环境 + 工具细则 + 大文件分块策略 + 输出风格」拼装系统提示（`PROMPT_VERSION` 写入 `context_built` 轨迹）；装配在 `core/app.py` 构造 `PromptContext` 并注入 `HandlerContext`，chat handler 传给 `agent_loop.run(system=...)`。当工具入参 JSON 达到 `max_tokens` 被中途截断时，`AnthropicClient._on_block_stop` 解析失败不再静默成 `{}`，而是置 `ToolUseEndEvent.truncated=True`；`AgentLoop` 对截断的工具调用**跳过执行**并回填「参数被截断，请缩小内容并拆分重试」的错误结果（仅保留 `stop_reason=max_tokens` 终态，不自动续写纯文本）。
 - **对话受理与终态通知**：`chat` 为「受理 + 通知」模型——`ClientSession._start_chat` 在 Run 创建成功后立即回受理 ack（`run_id` / `accepted` / `heartbeat_interval_ms`），最终结果不再走该请求响应；`_execute_chat` 停心跳后广播 `chat.completed`（含 text/usage/duration_ms/model）或 `chat.failed`（含 error），执行期间周期性推送 `chat.heartbeat`。命名会话扇出全部订阅者，临时会话单播发起连接。客户端收 ack 后以 completion Event 等待、无网络 deadline，并以 3× 心跳间隔做看门狗。
 - **工具执行上下文（ToolContext / ToolScope）**：`ToolHandler` 签名为 `Callable[[dict, ToolContext, ToolScope | None], Awaitable[Any]]`。`ToolContext` 是进程级环境（workspace_root + fs 读写限额），启动时构造一次、不随对话变化；`ToolScope` 是 per-Run 运行态（`run_id` + `task_graph`），经 `AgentLoop.run(scope=...)` → `ToolRegistry.execute(name, args, scope)` 显式传入。后续环境能力扩展 `ToolContext`，运行态能力扩展 `ToolScope`。
 - **文件工具沙箱**：内置 fs 工具的路径参数统一做 realpath 解析（含符号链接）后必须落在 `workspace_root` 内，越界抛 `PathOutsideRootError`；只处理 UTF-8 文本（二进制/含空字节拒绝）；`write_file` 不自动创建父目录、超出 `fs_max_write` 拒绝；`edit_file` 要求 `old_string` 唯一匹配；`read_file` 超出 `fs_max_read` 截断并标记。

@@ -38,11 +38,16 @@ class InputJsonDeltaEvent:
 
 @dataclass(frozen=True, slots=True)
 class ToolUseEndEvent:
-    """tool_use 块结束事件，参数已拼接并解析为 dict。"""
+    """tool_use 块结束事件，参数已拼接并解析为 dict。
+
+    truncated 为 True 表示参数 JSON 解析失败（通常是生成达到 max_tokens
+    被中途截断），此时 input 为空 dict，调用方不应执行该工具。
+    """
 
     block_id: str
     name: str
     input: dict[str, Any]
+    truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)

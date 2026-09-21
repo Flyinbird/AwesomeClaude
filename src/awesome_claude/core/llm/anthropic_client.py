@@ -25,6 +25,7 @@ from awesome_claude.core.llm.exceptions import (
     LLMRateLimitError,
     LLMTimeoutError,
 )
+from awesome_claude.shared.logging.app_logger import get_app_logger
 from awesome_claude.shared.types import ChatResponse, StopReason, TokenUsage
 
 
@@ -52,6 +53,7 @@ class AnthropicClient(LLMProvider):
         self._client = anthropic.AsyncAnthropic(**client_kwargs)
         self._model = model
         self._default_max_tokens = max_tokens
+        self._logger = get_app_logger("core.llm.anthropic")
 
     async def chat_stream(
         self,
@@ -107,6 +109,8 @@ class AnthropicClient(LLMProvider):
         blocks: dict[int, dict[str, Any]] = {}
         # index → 该 tool_use 块的参数 JSON 片段
         tool_json_parts: dict[int, list[str]] = {}
+        # 已正常收到 content_block_stop 的 tool_use 块 index
+        ended_tools: set[int] = set()
         try:
             async with self._client.messages.stream(**stream_kwargs) as stream:
                 async for raw_event in stream:
@@ -146,7 +150,9 @@ class AnthropicClient(LLMProvider):
                                 partial_json=partial,
                             )
                     elif event_type == "content_block_stop":
-                        stop_event = self._on_block_stop(event, blocks, tool_json_parts)
+                        stop_event = self._on_block_stop(
+                            event, blocks, tool_json_parts, ended_tools
+                        )
                         if stop_event is not None:
                             yield stop_event
                     elif event_type == "message_delta":
@@ -161,6 +167,21 @@ class AnthropicClient(LLMProvider):
                         if reason:
                             stop_reason = StopReason.from_raw(reason)
                     elif event_type == "message_stop":
+                        # 防御：若因截断导致 tool_use 块未收到 stop 事件，
+                        # 补发一个 truncated 结束事件，避免调用方漏掉该工具调用。
+                        for index in sorted(blocks):
+                            block = blocks[index]
+                            if block["type"] == "tool_use" and index not in ended_tools:
+                                self._logger.warning(
+                                    "tool_use block missing stop event; marked truncated",
+                                    tool=block.get("name"),
+                                )
+                                yield ToolUseEndEvent(
+                                    block_id=block["id"],
+                                    name=block["name"],
+                                    input={},
+                                    truncated=True,
+                                )
                         ordered = [blocks[i] for i in sorted(blocks)]
                         yield DoneEvent(
                             stop_reason=stop_reason,
@@ -225,15 +246,19 @@ class AnthropicClient(LLMProvider):
         event: Any,
         blocks: dict[int, dict[str, Any]],
         tool_json_parts: dict[int, list[str]],
+        ended_tools: set[int],
     ) -> ToolUseEndEvent | None:
         """处理 content_block_stop 事件。
 
-        tool_use 块结束时拼接并解析参数 JSON，产出结束事件。
+        tool_use 块结束时拼接并解析参数 JSON，产出结束事件。若 JSON 解析
+        失败（通常是生成达到 max_tokens 被中途截断），input 置为空 dict 并将
+        truncated 标记为 True，交由上层跳过执行并回填可操作的错误。
 
         Args:
             event: 原始流式事件。
             blocks: index → 累积 block 的映射（就地修改）。
             tool_json_parts: index → 参数 JSON 片段列表。
+            ended_tools: 已收到 stop 的 tool_use 块 index 集合（就地修改）。
 
         Returns:
             若为 tool_use 块结束则返回 ToolUseEndEvent，否则 None。
@@ -244,13 +269,25 @@ class AnthropicClient(LLMProvider):
         block = blocks.get(index)
         if block is None or block["type"] != "tool_use":
             return None
+        ended_tools.add(index)
         raw = "".join(tool_json_parts.get(index, []))
-        try:
-            parsed = json.loads(raw) if raw.strip() else {}
-        except json.JSONDecodeError:
+        truncated = False
+        if raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed, truncated = {}, True
+                self._logger.warning(
+                    "tool input json parse failed; marked truncated",
+                    tool=block["name"],
+                    raw_length=len(raw),
+                )
+        else:
             parsed = {}
         block["input"] = parsed
-        return ToolUseEndEvent(block_id=block["id"], name=block["name"], input=parsed)
+        return ToolUseEndEvent(
+            block_id=block["id"], name=block["name"], input=parsed, truncated=truncated
+        )
 
     async def chat(
         self,

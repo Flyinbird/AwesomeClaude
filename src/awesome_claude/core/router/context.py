@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from awesome_claude.core.agent.loop import AgentLoop
+from awesome_claude.core.agent.prompt import PromptContext
 from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.llm.base import LLMProvider
 from awesome_claude.core.session.channel import SessionChannel
@@ -20,3 +21,4 @@ class HandlerContext:
     config: ServerConfig
     agent_loop: AgentLoop | None = None
     run: Run | None = None
+    system_prompt: PromptContext | None = None

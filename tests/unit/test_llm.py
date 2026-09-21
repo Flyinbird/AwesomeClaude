@@ -338,6 +338,48 @@ class TestToolUseEvents:
             }
         ]
 
+    async def test_truncated_tool_input_marked_and_not_parsed(self) -> None:
+        events = [
+            _message_start(10),
+            _block_start_tool(0, "toolu_1", "write_file"),
+            _input_json_delta(0, '{"path": "a.md", "content": "unterminated'),
+            _block_stop(0),
+            _message_delta(4096, "max_tokens"),
+            _message_stop(),
+        ]
+        client, _ = make_client(events)
+        got: list[Any] = []
+        async for event in client.chat_stream([{"role": "user", "content": "write"}]):
+            got.append(event)
+
+        ends = [e for e in got if isinstance(e, ToolUseEndEvent)]
+        done = got[-1]
+
+        assert len(ends) == 1
+        assert ends[0].truncated is True
+        assert ends[0].input == {}
+        assert isinstance(done, DoneEvent)
+        assert done.stop_reason == "max_tokens"
+        assert done.message["content"][0]["input"] == {}
+
+    async def test_missing_block_stop_emits_truncated_event(self) -> None:
+        events = [
+            _message_start(10),
+            _block_start_tool(0, "toolu_1", "write_file"),
+            _input_json_delta(0, '{"path": "a.md", "content": "partial'),
+            _message_delta(4096, "max_tokens"),
+            _message_stop(),
+        ]
+        client, _ = make_client(events)
+        got: list[Any] = []
+        async for event in client.chat_stream([{"role": "user", "content": "write"}]):
+            got.append(event)
+
+        ends = [e for e in got if isinstance(e, ToolUseEndEvent)]
+        assert len(ends) == 1
+        assert ends[0].truncated is True
+        assert ends[0].input == {}
+
     async def test_text_then_tool_use_blocks_ordered(self) -> None:
         events = [
             _message_start(10),

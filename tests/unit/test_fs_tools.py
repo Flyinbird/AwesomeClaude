@@ -127,6 +127,25 @@ class TestFsTools:
         err = await _exec_err(reg, "write_file", {"path": "f.txt", "content": "12345"})
         assert "上限" in err
 
+    async def test_write_file_missing_content_reports_missing_arg(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "ws"
+        root.mkdir()
+        reg = _registry(root)
+        err = await _exec_err(reg, "write_file", {"path": "f.txt"})
+        assert "缺少必需参数 content" in err
+
+    async def test_edit_file_missing_old_string_reports_missing_arg(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "ws"
+        root.mkdir()
+        (root / "f.txt").write_text("hello")
+        reg = _registry(root)
+        err = await _exec_err(reg, "edit_file", {"path": "f.txt", "new_string": "x"})
+        assert "缺少必需参数 old_string" in err
+
     async def test_edit_file_success(self, tmp_path: Path) -> None:
         root = tmp_path / "ws"
         root.mkdir()

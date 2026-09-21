@@ -37,6 +37,7 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
                                        |
             +--------------------------+--------------------------+
             |  core/agent/loop.py   · AgentLoop 多轮编排           |
+            |  core/agent/prompt.py · System Prompt 构造           |
             |  core/tools/          · ToolRegistry 工具注册/执行     |
             |  core/task/           · TaskGraph 任务 DAG / 状态机     |
             |  core/session/        · SessionRegistry 会话共享      |
@@ -57,8 +58,9 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `core/server/tcp.py` | TCP 监听、多客户端并发、优雅停止 |
 | `core/server/session.py` | 逐行读取 → 解析 → 分发 → 回写；控制类请求内联、chat 任务化为 Run；断连取消与发送串行化 |
 | `core/router/dispatcher.py` | 方法分发，未注册方法返回 METHOD_NOT_FOUND |
-| `core/router/context.py` | HandlerContext（trace_store / llm_client / sessions / config / agent_loop / run） |
-| `core/agent/loop.py` | AgentLoop：多轮 LLM + 工具编排，`on_event` / `on_step` 回调透出事件，撞 max_steps 时收尾/截断 |
+| `core/router/context.py` | HandlerContext（trace_store / llm_client / sessions / config / agent_loop / run / system_prompt） |
+| `core/agent/loop.py` | AgentLoop：多轮 LLM + 工具编排，`on_event` / `on_step` 回调透出事件，撞 max_steps 时收尾/截断；跳过参数被 `max_tokens` 截断的工具调用并回填拆分提示 |
+| `core/agent/prompt.py` | System Prompt 构造：PromptContext / build_system_prompt / PROMPT_VERSION（环境、工具细则、大文件分块策略） |
 | `core/agent/events.py` | StepStarted / StepFinished / ToolStarted / ToolFinished |
 | `core/agent/result.py` | AgentResult（文本、消息历史、用量、步数、StopReason） |
 | `core/tools/registry.py` | ToolRegistry：注册 / 查询 / 执行（注入 ToolContext + ToolScope）/ 转 Anthropic tools schema |
@@ -69,10 +71,10 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `core/session/registry.py` | ConnectionSink / Session / SessionRegistry（订阅、在途 Run、广播、状态、零订阅取消与临时会话销毁） |
 | `core/session/run.py` | Run / RunState / RunInitiator：会话拥有的对话执行实体与唯一终态状态机 |
 | `core/session/channel.py` | SessionChannel：每连接门面，广播（含指定会话）或单播 |
-| `core/handlers/chat.py` | chat 完整流程：Run 轨迹记录 + 任务计划（TaskGraph）+ 委托 AgentLoop + 通知广播 |
+| `core/handlers/chat.py` | chat 完整流程：System Prompt 构造（PromptContext）+ Run 轨迹记录 + 任务计划（TaskGraph）+ 委托 AgentLoop + 通知广播 |
 | `core/handlers/session.py` | session.attach / session.detach |
 | `core/llm/base.py` | LLMProvider 协议：供应商无关的流式/非流式客户端接口 |
-| `core/llm/anthropic_client.py` | AnthropicClient：Anthropic SDK 封装（`chat_stream` 文本/思考/工具事件、`chat`、异常映射） |
+| `core/llm/anthropic_client.py` | AnthropicClient：Anthropic SDK 封装（`chat_stream` 文本/思考/工具事件、`chat`、异常映射；工具入参 JSON 截断置 `truncated=True`） |
 | `core/observability/trace_recorder.py` | Run 作用域轨迹记录（绑定 run_id 与起点，含 step 维度） |
 | `core/app.py` | 装配 TraceStore/AnthropicClient/ToolRegistry/AgentLoop/SessionRegistry/TCPServer |
 | `core/config.py` | ServerConfig + `load_server_config()`（.env / 环境变量） |

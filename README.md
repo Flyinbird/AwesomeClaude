@@ -78,6 +78,8 @@ AWESOME_CLAUDE_BASE_URL=https://api.deepseek.com/anthropic
 ## Phase 3（部分）功能
 
 - **Agent Loop**：`AgentLoop` 编排多轮 LLM 调用与工具调用，支持多步任务
+- **System Prompt**：`core/agent/prompt.py` 按「身份准则 + 环境 + 工具细则 + 大文件策略 + 输出风格」动态拼装系统提示（`PROMPT_VERSION` 写入 `context_built` 轨迹），引导模型规划任务与大文件分段写入
+- **截断自愈**：工具入参 JSON 因 `max_tokens` 被截断时不再静默成空参，`AgentLoop` 跳过该调用并回填「拆分重试」提示（`ToolUseEndEvent.truncated`）
 - **工具调用**：`ToolRegistry` 注册与执行工具（内置 `get_time`），工具结果回填 LLM 继续推理
 - **任务 step 化**：任务日志按 `step_index` 区分多轮，含 `step_started` / `tool_started` / `tool_failed` 等阶段
 - **多客户端会话**：多个 CLI/TUI 客户端经 `session.attach` 共享同一会话，实时广播 `chat.stream` / `chat.tool_*` 通知，晚加入客户端回放历史（`--session` 参数指定会话）
@@ -116,7 +118,9 @@ awesome-claude/
 │       │   │   └── context.py     # 请求上下文
 │       │   ├── agent/        # Agent 运行时
 │       │   │   ├── loop.py      # AgentLoop：多轮 LLM + 工具编排
-│       │   │   └── events.py    # step/tool 结构事件
+│       │   │   ├── prompt.py    # System Prompt 构造（PromptContext / build_system_prompt）
+│       │   │   ├── events.py    # step/tool 结构事件
+│       │   │   └── result.py    # AgentResult
 │       │   ├── tools/        # 工具抽象（base/registry/builtin）
 │       │   ├── session/      # 会话管理（多客户端共享）
 │       │   ├── handlers/     # 业务处理器（ping/echo/shutdown/chat/session）

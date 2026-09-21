@@ -11,6 +11,7 @@ from awesome_claude.core.agent.events import (
     ToolFinished,
     ToolStarted,
 )
+from awesome_claude.core.agent.prompt import PROMPT_VERSION, build_system_prompt
 from awesome_claude.core.handlers.base import register_handler
 from awesome_claude.core.llm.events import TextDeltaEvent
 from awesome_claude.core.llm.exceptions import (
@@ -239,6 +240,11 @@ async def handle_chat(
 
     task_graph = TaskGraph(run_id, on_change=on_task_change)
     scope = ToolScope(run_id=run_id, task_graph=task_graph)
+    system = (
+        build_system_prompt(context.system_prompt)
+        if context.system_prompt is not None
+        else None
+    )
 
     async def on_event(event: Any) -> None:
         nonlocal chunk_index
@@ -264,6 +270,9 @@ async def handle_chat(
                     TraceStage.CONTEXT_BUILT,
                     {
                         "system": event.system,
+                        "system_prompt_version": PROMPT_VERSION
+                        if event.system
+                        else None,
                         "messages": _clip_messages(event.messages),
                         "message_count": len(event.messages),
                         "tools": [t["name"] for t in event.tools]
@@ -358,7 +367,7 @@ async def handle_chat(
             )
 
         result = await agent_loop.run(
-            message, on_event=on_event, on_step=on_step, scope=scope
+            message, system=system, on_event=on_event, on_step=on_step, scope=scope
         )
 
         await emit(

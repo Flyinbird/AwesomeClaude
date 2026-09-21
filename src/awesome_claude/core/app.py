@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from awesome_claude.core.agent.loop import AgentLoop
+from awesome_claude.core.agent.prompt import PromptContext, ToolBrief
 from awesome_claude.core.config import ServerConfig, load_server_config
 from awesome_claude.core.llm.anthropic_client import AnthropicClient
 from awesome_claude.core.llm.base import LLMProvider
@@ -30,6 +31,7 @@ def build_context_factory(
     llm_client: LLMProvider,
     config: ServerConfig,
     agent_loop: AgentLoop,
+    system_prompt: PromptContext | None = None,
 ) -> Callable[[SessionChannel], HandlerContext]:
     """构造会话上下文工厂。
 
@@ -38,6 +40,7 @@ def build_context_factory(
         llm_client: LLM 客户端。
         config: 服务端配置。
         agent_loop: Agent 循环编排器。
+        system_prompt: System Prompt 静态上下文（可选）。
 
     Returns:
         接收 SessionChannel 并返回 HandlerContext 的工厂函数。
@@ -50,9 +53,38 @@ def build_context_factory(
             sessions=channel,
             config=config,
             agent_loop=agent_loop,
+            system_prompt=system_prompt,
         )
 
     return factory
+
+
+def _build_prompt_context(
+    config: ServerConfig, tool_context: ToolContext, registry: ToolRegistry
+) -> PromptContext:
+    """根据配置与已注册工具构造 System Prompt 上下文。
+
+    Args:
+        config: 服务端配置。
+        tool_context: 工具执行环境（沙箱根与读写限额）。
+        registry: 工具注册表。
+
+    Returns:
+        PromptContext 实例。
+    """
+    tools = tuple(
+        ToolBrief(name=tool.name, description=tool.description)
+        for tool in (registry.get(name) for name in registry.names())
+        if tool is not None
+    )
+    return PromptContext(
+        workspace_root=tool_context.workspace_root,
+        fs_max_read=tool_context.fs_max_read,
+        fs_max_write=tool_context.fs_max_write,
+        max_tokens=config.max_tokens,
+        tools=tools,
+        model=config.model,
+    )
 
 
 async def run_server(config: ServerConfig | None = None) -> None:
@@ -81,9 +113,12 @@ async def run_server(config: ServerConfig | None = None) -> None:
     for tool in [create_time_tool(), *create_fs_tools(), *create_plan_tools()]:
         tool_registry.register(tool)
     agent_loop = AgentLoop(llm_client, tool_registry)
+    system_prompt = _build_prompt_context(config, tool_context, tool_registry)
     dispatcher = create_dispatcher()
     session_registry = SessionRegistry()
-    context_factory = build_context_factory(trace_store, llm_client, config, agent_loop)
+    context_factory = build_context_factory(
+        trace_store, llm_client, config, agent_loop, system_prompt
+    )
     server = TCPServer(
         config.host, config.port, dispatcher, context_factory, session_registry
     )

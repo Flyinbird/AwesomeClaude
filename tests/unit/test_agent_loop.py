@@ -201,6 +201,47 @@ class TestAgentLoop:
         assert tool_result["is_error"] is True
         assert "RuntimeError" in tool_result["content"]
 
+    async def test_truncated_tool_call_skipped_and_hinted(self) -> None:
+        calls: list[dict[str, Any]] = []
+
+        async def handler(args: dict[str, Any], ctx: Any, scope: Any = None) -> str:
+            calls.append(args)
+            return "should not run"
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool(name="write_file", description="d", input_schema={}, handler=handler)
+        )
+
+        llm = FakeLLM(
+            [
+                [
+                    ToolUseEndEvent("t1", "write_file", {}, truncated=True),
+                    _done(
+                        "",
+                        stop_reason="max_tokens",
+                        content=[
+                            {
+                                "type": "tool_use",
+                                "id": "t1",
+                                "name": "write_file",
+                                "input": {},
+                            }
+                        ],
+                    ),
+                ],
+                [TextDeltaEvent("done"), _done("done")],
+            ]
+        )
+        loop = AgentLoop(llm, registry)
+        result = await loop.run("x")
+
+        assert calls == []
+        assert result.text == "done"
+        tool_result = result.messages[-2]["content"][0]
+        assert tool_result["is_error"] is True
+        assert "截断" in tool_result["content"]
+
     async def test_on_event_receives_all_events(self) -> None:
         llm = FakeLLM([[TextDeltaEvent("a"), _done("a")]])
         loop = AgentLoop(llm, ToolRegistry())

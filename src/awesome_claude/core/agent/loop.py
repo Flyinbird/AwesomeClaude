@@ -19,6 +19,7 @@ from awesome_claude.core.llm.events import (
     TextDeltaEvent,
     ToolUseEndEvent,
 )
+from awesome_claude.core.tools.base import ToolResult
 from awesome_claude.core.tools.context import ToolScope
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.shared.types import StopReason, TokenUsage
@@ -27,6 +28,11 @@ type EventHandler = Callable[[LLMStreamEvent], Awaitable[None]]
 type StepHandler = Callable[[AgentEvent], Awaitable[None]]
 
 _FINALIZE_HINT = "已达最大步数，请基于以上内容直接给出最终回答，不要再调用工具。"
+_TRUNCATED_TOOL_HINT = (
+    "工具调用未执行：参数 JSON 不完整，生成很可能在 max_tokens 处被截断。"
+    "请缩小本次调用的内容（例如大文件先 write_file 写骨架，再用 edit_file "
+    "分段追加），不要原样重试。"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,9 +173,12 @@ class AgentLoop:
                             args=tool_use["input"],
                         )
                     )
-                result = await self._tools.execute(
-                    tool_use["name"], tool_use["input"], scope
-                )
+                if tool_use.get("truncated"):
+                    result = ToolResult(content=_TRUNCATED_TOOL_HINT, is_error=True)
+                else:
+                    result = await self._tools.execute(
+                        tool_use["name"], tool_use["input"], scope
+                    )
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -274,6 +283,7 @@ class AgentLoop:
                         "id": event.block_id,
                         "name": event.name,
                         "input": event.input,
+                        "truncated": event.truncated,
                     }
                 )
             elif isinstance(event, DoneEvent):

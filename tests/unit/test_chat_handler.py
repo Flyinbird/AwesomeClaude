@@ -2,10 +2,12 @@
 
 import json
 import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 from awesome_claude.core.agent.loop import AgentLoop
+from awesome_claude.core.agent.prompt import PROMPT_VERSION, PromptContext
 from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.handlers.chat import handle_chat
 from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent, ToolUseEndEvent
@@ -114,6 +116,7 @@ def make_context(
     recorder: FakeRecorder,
     *,
     agent_loop: AgentLoop | None = None,
+    system_prompt: PromptContext | None = None,
 ) -> tuple[HandlerContext, NotificationRecorder]:
     """构造带替身的 HandlerContext（绑定一个已带记录器的 Run）。"""
     notif = NotificationRecorder()
@@ -126,8 +129,22 @@ def make_context(
         config=ServerConfig(api_key="k", model="m"),
         agent_loop=agent_loop or AgentLoop(llm, ToolRegistry()),
         run=run,
+        system_prompt=system_prompt,
     )
     return context, notif
+
+
+class RecordingLLM(FakeLLMClient):
+    """记录每轮 system 参数的 FakeLLMClient。"""
+
+    def __init__(self, events: list[Any] | None = None) -> None:
+        super().__init__(events)
+        self.systems: list[str | None] = []
+
+    async def chat_stream(self, messages: list[dict], **kwargs: Any) -> Any:
+        self.systems.append(kwargs.get("system"))
+        async for event in super().chat_stream(messages, **kwargs):
+            yield event
 
 
 class TestHandleChat:
@@ -171,6 +188,39 @@ class TestHandleChat:
         assert len(finals) == 1
         assert finals[0]["is_final"] is True
         assert finals[0]["run_id"] == "run1"
+
+    async def test_system_prompt_injected_and_version_traced(self) -> None:
+        recorder = FakeRecorder()
+        llm = RecordingLLM(_stream_events())
+        prompt_ctx = PromptContext(
+            workspace_root=Path("/tmp/ws"),
+            fs_max_read=1000,
+            fs_max_write=2000,
+            max_tokens=4096,
+            model="m",
+        )
+        context, _ = make_context(llm, recorder, system_prompt=prompt_ctx)
+
+        await handle_chat({"message": "hi"}, context)
+
+        assert llm.systems and llm.systems[0] is not None
+        assert "工作区根目录" in llm.systems[0]
+        context_built = next(
+            data
+            for stage, data, _ in recorder.stages
+            if stage == TraceStage.CONTEXT_BUILT
+        )
+        assert context_built["system_prompt_version"] == PROMPT_VERSION
+        assert context_built["system"] == llm.systems[0]
+
+    async def test_no_system_prompt_when_context_missing(self) -> None:
+        recorder = FakeRecorder()
+        llm = RecordingLLM(_stream_events())
+        context, _ = make_context(llm, recorder)
+
+        await handle_chat({"message": "hi"}, context)
+
+        assert llm.systems == [None]
 
     async def test_invalid_params_no_stages(self) -> None:
         recorder = FakeRecorder()
