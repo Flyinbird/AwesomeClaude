@@ -3,13 +3,12 @@
 from typing import Any
 
 from awesome_claude.core.handlers.base import register_handler
-from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.protocol.methods import METHOD_ECHO
 
 
 @register_handler(METHOD_ECHO)
 async def handle_echo(
-    params: dict[str, Any] | None, context: HandlerContext
+    params: dict[str, Any] | None
 ) -> dict[str, Any]:
     """回显测试：原样返回 message。
 
