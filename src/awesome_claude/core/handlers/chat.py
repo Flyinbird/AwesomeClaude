@@ -20,6 +20,8 @@ from awesome_claude.core.llm.exceptions import (
     LLMTimeoutError,
 )
 from awesome_claude.core.observability.trace_recorder import TraceRecorder
+from awesome_claude.core.permissions.broker import NonInteractiveBroker
+from awesome_claude.core.permissions.manager import PermissionManager
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.session.run import RunState
 from awesome_claude.core.task.graph import TaskChange, TaskChangeKind, TaskGraph
@@ -239,7 +241,16 @@ async def handle_chat(
         )
 
     task_graph = TaskGraph(run_id, on_change=on_task_change)
-    scope = ToolScope(run_id=run_id, task_graph=task_graph)
+    permission_manager: PermissionManager | None = None
+    if context.permission_policy is not None:
+        permission_manager = PermissionManager(
+            context.permission_policy,
+            NonInteractiveBroker(),
+            recorder=recorder,
+        )
+    scope = ToolScope(
+        run_id=run_id, task_graph=task_graph, permissions=permission_manager
+    )
     system = (
         build_system_prompt(context.system_prompt)
         if context.system_prompt is not None

@@ -26,6 +26,9 @@ class TestTraceStage:
         assert TraceStage.TOOL_STARTED.value == "tool_started"
         assert TraceStage.TOOL_COMPLETED.value == "tool_completed"
         assert TraceStage.TOOL_FAILED.value == "tool_failed"
+        assert TraceStage.PERMISSION_REQUESTED.value == "permission_requested"
+        assert TraceStage.PERMISSION_GRANTED.value == "permission_granted"
+        assert TraceStage.PERMISSION_DENIED.value == "permission_denied"
         assert TraceStage.TASK_ADDED.value == "task_added"
         assert TraceStage.TASK_STARTED.value == "task_started"
         assert TraceStage.TASK_COMPLETED.value == "task_completed"
@@ -37,7 +40,7 @@ class TestTraceStage:
         assert TraceStage.RUN_CANCELLED.value == "run_cancelled"
 
     def test_member_count(self) -> None:
-        assert len(TraceStage) == 18
+        assert len(TraceStage) == 21
 
     def test_is_str_enum(self) -> None:
         assert isinstance(TraceStage.RUN_CREATED, str)

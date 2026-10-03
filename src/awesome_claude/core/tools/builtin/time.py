@@ -3,6 +3,7 @@
 import time
 from typing import Any
 
+from awesome_claude.core.permissions.types import PermissionDecision, PermissionSpec
 from awesome_claude.core.tools.base import Tool
 from awesome_claude.core.tools.context import ToolContext, ToolScope
 
@@ -34,4 +35,5 @@ def create_time_tool() -> Tool:
         description="返回当前服务器本地时间（格式 YYYY-MM-DD HH:MM:SS）。",
         input_schema={"type": "object", "properties": {}, "required": []},
         handler=_get_time,
+        permission=PermissionSpec(default=PermissionDecision.ALLOW),
     )

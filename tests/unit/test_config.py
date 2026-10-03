@@ -3,6 +3,7 @@
 import pytest
 
 from awesome_claude.core.config import ServerConfig, load_server_config
+from awesome_claude.core.permissions.types import PermissionDecision
 
 _ENV_KEYS = [
     "ANTHROPIC_API_KEY",
@@ -17,6 +18,7 @@ _ENV_KEYS = [
     "AWESOME_CLAUDE_FS_MAX_READ",
     "AWESOME_CLAUDE_FS_MAX_WRITE",
     "AWESOME_CLAUDE_HEARTBEAT_INTERVAL",
+    "AWESOME_CLAUDE_PERMISSION_DEFAULT",
 ]
 
 
@@ -60,6 +62,27 @@ class TestLoadServerConfig:
         assert config.log_level == "INFO"
         assert config.log_dir == "logs"
         assert config.heartbeat_interval == 15.0
+
+    def test_permission_default_defaults_to_allow(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        config = load_server_config()
+        assert config.permission_default is PermissionDecision.ALLOW
+
+    def test_permission_default_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("AWESOME_CLAUDE_PERMISSION_DEFAULT", "deny")
+        config = load_server_config()
+        assert config.permission_default is PermissionDecision.DENY
+
+    def test_invalid_permission_default_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("AWESOME_CLAUDE_PERMISSION_DEFAULT", "maybe")
+        with pytest.raises(ValueError, match="AWESOME_CLAUDE_PERMISSION_DEFAULT"):
+            load_server_config()
 
     def test_heartbeat_interval_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")

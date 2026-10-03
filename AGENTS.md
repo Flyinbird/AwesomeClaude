@@ -137,6 +137,7 @@ awesome-claude/
 | `AWESOME_CLAUDE_FS_MAX_READ` | | `30000` | 单次读取字节上限 |
 | `AWESOME_CLAUDE_FS_MAX_WRITE` | | `100000` | 单次写入字节上限 |
 | `AWESOME_CLAUDE_HEARTBEAT_INTERVAL` | | `15` | 对话心跳间隔（秒）；客户端以 3× 作为连接看门狗阈值 |
+| `AWESOME_CLAUDE_PERMISSION_DEFAULT` | | `allow` | 工具执行全局默认权限姿态（`allow`/`deny`/`ask`） |
 
 ## 架构约束
 - `core/` 和 `client/` 只能通过 `protocol/` 中定义的接口通信，不能直接互相 import

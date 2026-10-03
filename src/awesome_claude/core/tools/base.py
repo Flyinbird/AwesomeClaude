@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from awesome_claude.core.permissions.types import PermissionSpec
 from awesome_claude.core.tools.context import ToolContext, ToolScope
 
 type ToolHandler = Callable[
@@ -13,12 +14,13 @@ type ToolHandler = Callable[
 
 @dataclass(frozen=True, slots=True)
 class Tool:
-    """工具定义：名称、描述、输入 schema 与异步执行函数。"""
+    """工具定义：名称、描述、输入 schema、执行函数与权限规格。"""
 
     name: str
     description: str
     input_schema: dict[str, Any]
     handler: ToolHandler
+    permission: PermissionSpec | None = None
 
 
 @dataclass(frozen=True, slots=True)

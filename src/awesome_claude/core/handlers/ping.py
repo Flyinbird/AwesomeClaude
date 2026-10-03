@@ -4,11 +4,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from awesome_claude.core.handlers.base import register_handler
+from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.protocol.methods import METHOD_PING
 
 
 @register_handler(METHOD_PING)
 async def handle_ping(
+    params: dict[str, Any] | None, context: HandlerContext
 ) -> dict[str, Any]:
     """健康检查：返回状态与当前 UTC ISO 时间戳。
 

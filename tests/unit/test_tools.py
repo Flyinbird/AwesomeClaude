@@ -3,6 +3,10 @@
 from pathlib import Path
 from typing import Any
 
+from awesome_claude.core.permissions.broker import NonInteractiveBroker
+from awesome_claude.core.permissions.manager import PermissionManager
+from awesome_claude.core.permissions.policy import PermissionPolicy
+from awesome_claude.core.permissions.types import PermissionDecision
 from awesome_claude.core.tools.base import Tool, ToolResult
 from awesome_claude.core.tools.context import ToolContext, ToolScope
 from awesome_claude.core.tools.registry import ToolRegistry
@@ -101,3 +105,56 @@ class TestToolRegistry:
         result = await reg.execute("probe", {})
         assert result.is_error is False
         assert seen["root"] == tmp_path
+
+    async def test_execute_permission_denied_blocks_handler(self) -> None:
+        calls: list[int] = []
+
+        async def handler(
+            args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+        ) -> str:
+            calls.append(1)
+            return "ran"
+
+        reg = ToolRegistry()
+        reg.register(Tool(name="t", description="d", input_schema={}, handler=handler))
+        manager = PermissionManager(
+            PermissionPolicy(global_default=PermissionDecision.DENY),
+            NonInteractiveBroker(),
+        )
+        scope = ToolScope(run_id="r1", permissions=manager)
+
+        result = await reg.execute("t", {}, scope)
+
+        assert result.is_error is True
+        assert "权限被拒绝" in result.content
+        assert calls == []
+
+    async def test_execute_permission_allowed_runs_handler(self) -> None:
+        calls: list[int] = []
+
+        async def handler(
+            args: dict[str, Any], ctx: ToolContext, scope: ToolScope | None = None
+        ) -> str:
+            calls.append(1)
+            return "ran"
+
+        reg = ToolRegistry()
+        reg.register(Tool(name="t", description="d", input_schema={}, handler=handler))
+        manager = PermissionManager(
+            PermissionPolicy(global_default=PermissionDecision.ALLOW),
+            NonInteractiveBroker(),
+        )
+        scope = ToolScope(run_id="r1", permissions=manager)
+
+        result = await reg.execute("t", {}, scope)
+
+        assert result.content == "ran"
+        assert result.is_error is False
+        assert calls == [1]
+
+    async def test_execute_passthrough_without_permission_manager(self) -> None:
+        reg = ToolRegistry()
+        reg.register(Tool(name="echo", description="d", input_schema={}, handler=_echo))
+        scope = ToolScope(run_id="r1")
+        result = await reg.execute("echo", {"text": "hi"}, scope)
+        assert result == ToolResult(content="hi")

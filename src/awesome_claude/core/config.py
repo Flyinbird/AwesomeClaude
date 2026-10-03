@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from awesome_claude.core.permissions.types import PermissionDecision
+
 
 @dataclass(frozen=True, slots=True)
 class ServerConfig:
@@ -23,6 +25,7 @@ class ServerConfig:
     fs_max_read: int = 30000
     fs_max_write: int = 100000
     heartbeat_interval: float = 15.0
+    permission_default: PermissionDecision = PermissionDecision.ALLOW
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
@@ -40,7 +43,9 @@ def load_server_config() -> ServerConfig:
         AWESOME_CLAUDE_LOG_LEVEL、AWESOME_CLAUDE_LOG_DIR、
         AWESOME_CLAUDE_WORKSPACE_DIR（可选，文件工具沙箱根目录）、
         AWESOME_CLAUDE_FS_MAX_READ、AWESOME_CLAUDE_FS_MAX_WRITE、
-        AWESOME_CLAUDE_HEARTBEAT_INTERVAL（对话心跳间隔秒数，默认 15）。
+        AWESOME_CLAUDE_HEARTBEAT_INTERVAL（对话心跳间隔秒数，默认 15）、
+        AWESOME_CLAUDE_PERMISSION_DEFAULT（工具权限全局默认姿态，
+        allow/deny/ask 之一，默认 allow）。
 
     Returns:
         服务端配置。
@@ -48,7 +53,7 @@ def load_server_config() -> ServerConfig:
     Raises:
         ValueError: 缺少必需的 ANTHROPIC_API_KEY，或 PORT/MAX_TOKENS/
             FS_MAX_READ/FS_MAX_WRITE 不是整数，或 HEARTBEAT_INTERVAL
-            不是数字。
+            不是数字，或 PERMISSION_DEFAULT 不是合法姿态。
     """
     load_dotenv()
 
@@ -70,7 +75,22 @@ def load_server_config() -> ServerConfig:
         fs_max_read=_env_int("AWESOME_CLAUDE_FS_MAX_READ", 30000),
         fs_max_write=_env_int("AWESOME_CLAUDE_FS_MAX_WRITE", 100000),
         heartbeat_interval=_env_float("AWESOME_CLAUDE_HEARTBEAT_INTERVAL", 15.0),
+        permission_default=_env_decision(
+            "AWESOME_CLAUDE_PERMISSION_DEFAULT", PermissionDecision.ALLOW
+        ),
     )
+
+
+def _env_decision(name: str, default: PermissionDecision) -> PermissionDecision:
+    """读取权限姿态环境变量，非法时抛出 ValueError。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return PermissionDecision(raw)
+    except ValueError:
+        valid = "/".join(d.value for d in PermissionDecision)
+        raise ValueError(f"环境变量 {name} 必须是 {valid} 之一: {raw!r}") from None
 
 
 def _env_int(name: str, default: int) -> int:

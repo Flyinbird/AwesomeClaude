@@ -6,6 +6,7 @@ from awesome_claude.core.agent.loop import AgentLoop
 from awesome_claude.core.agent.prompt import PromptContext
 from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.llm.base import LLMProvider
+from awesome_claude.core.permissions.policy import PermissionPolicy
 from awesome_claude.core.session.channel import SessionChannel
 from awesome_claude.core.session.run import Run
 from awesome_claude.shared.logging.trace_store import TraceStore
@@ -22,3 +23,4 @@ class HandlerContext:
     agent_loop: AgentLoop | None = None
     run: Run | None = None
     system_prompt: PromptContext | None = None
+    permission_policy: PermissionPolicy | None = None

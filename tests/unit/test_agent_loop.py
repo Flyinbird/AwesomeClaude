@@ -15,7 +15,12 @@ from awesome_claude.core.llm.events import (
     TextDeltaEvent,
     ToolUseEndEvent,
 )
+from awesome_claude.core.permissions.broker import NonInteractiveBroker
+from awesome_claude.core.permissions.manager import PermissionManager
+from awesome_claude.core.permissions.policy import PermissionPolicy
+from awesome_claude.core.permissions.types import PermissionDecision
 from awesome_claude.core.tools.base import Tool
+from awesome_claude.core.tools.context import ToolScope
 from awesome_claude.core.tools.registry import ToolRegistry
 from awesome_claude.shared.types import StopReason, TokenUsage
 
@@ -200,6 +205,54 @@ class TestAgentLoop:
         tool_result = result.messages[-2]["content"][0]
         assert tool_result["is_error"] is True
         assert "RuntimeError" in tool_result["content"]
+
+    async def test_permission_denied_tool_result_is_error_and_loop_continues(
+        self,
+    ) -> None:
+        calls: list[int] = []
+
+        async def secret(args: dict[str, Any], ctx: Any, scope: Any = None) -> str:
+            calls.append(1)
+            return "secret"
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool(name="secret", description="d", input_schema={}, handler=secret)
+        )
+        manager = PermissionManager(
+            PermissionPolicy(global_default=PermissionDecision.DENY),
+            NonInteractiveBroker(),
+        )
+        scope = ToolScope(run_id="r1", permissions=manager)
+
+        llm = FakeLLM(
+            [
+                [
+                    ToolUseEndEvent("t1", "secret", {}),
+                    _done(
+                        "",
+                        stop_reason="tool_use",
+                        content=[
+                            {
+                                "type": "tool_use",
+                                "id": "t1",
+                                "name": "secret",
+                                "input": {},
+                            }
+                        ],
+                    ),
+                ],
+                [TextDeltaEvent("done"), _done("done")],
+            ]
+        )
+        loop = AgentLoop(llm, registry)
+        result = await loop.run("x", scope=scope)
+
+        assert calls == []
+        assert result.text == "done"
+        tool_result = result.messages[-2]["content"][0]
+        assert tool_result["is_error"] is True
+        assert "权限被拒绝" in tool_result["content"]
 
     async def test_truncated_tool_call_skipped_and_hinted(self) -> None:
         calls: list[dict[str, Any]] = []

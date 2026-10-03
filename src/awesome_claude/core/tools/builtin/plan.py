@@ -2,9 +2,12 @@
 
 from typing import Any
 
+from awesome_claude.core.permissions.types import PermissionDecision, PermissionSpec
 from awesome_claude.core.task.graph import TaskGraph
 from awesome_claude.core.tools.base import Tool
 from awesome_claude.core.tools.context import ToolContext, ToolScope
+
+_PLAN_PERMISSION = PermissionSpec(default=PermissionDecision.ALLOW)
 
 
 def _require_graph(scope: ToolScope | None) -> TaskGraph:
@@ -153,6 +156,7 @@ def create_plan_tools() -> list[Tool]:
                 "required": ["tasks"],
             },
             handler=_add_tasks,
+            permission=_PLAN_PERMISSION,
         ),
         Tool(
             name="update_task_deps",
@@ -166,6 +170,7 @@ def create_plan_tools() -> list[Tool]:
                 "required": ["task_id", "deps"],
             },
             handler=_update_task_deps,
+            permission=_PLAN_PERMISSION,
         ),
         Tool(
             name="start_task",
@@ -174,6 +179,7 @@ def create_plan_tools() -> list[Tool]:
             ),
             input_schema=_TASK_ID_SCHEMA,
             handler=_start_task,
+            permission=_PLAN_PERMISSION,
         ),
         Tool(
             name="complete_task",
@@ -187,6 +193,7 @@ def create_plan_tools() -> list[Tool]:
                 "required": ["task_id"],
             },
             handler=_complete_task,
+            permission=_PLAN_PERMISSION,
         ),
         Tool(
             name="reopen_task",
@@ -203,11 +210,13 @@ def create_plan_tools() -> list[Tool]:
                 "required": ["task_id", "error"],
             },
             handler=_reopen_task,
+            permission=_PLAN_PERMISSION,
         ),
         Tool(
             name="suspend_task",
             description="为插入前置任务而暂时让出进行中的任务（不计为失败重试）。",
             input_schema=_TASK_ID_SCHEMA,
             handler=_suspend_task,
+            permission=_PLAN_PERMISSION,
         ),
     ]

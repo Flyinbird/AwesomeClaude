@@ -10,6 +10,7 @@ from awesome_claude.core.agent.prompt import PromptContext, ToolBrief
 from awesome_claude.core.config import ServerConfig, load_server_config
 from awesome_claude.core.llm.anthropic_client import AnthropicClient
 from awesome_claude.core.llm.base import LLMProvider
+from awesome_claude.core.permissions.policy import PermissionPolicy
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import create_dispatcher
 from awesome_claude.core.server.tcp import TCPServer
@@ -32,6 +33,7 @@ def build_context_factory(
     config: ServerConfig,
     agent_loop: AgentLoop,
     system_prompt: PromptContext | None = None,
+    permission_policy: PermissionPolicy | None = None,
 ) -> Callable[[SessionChannel], HandlerContext]:
     """构造会话上下文工厂。
 
@@ -41,6 +43,7 @@ def build_context_factory(
         config: 服务端配置。
         agent_loop: Agent 循环编排器。
         system_prompt: System Prompt 静态上下文（可选）。
+        permission_policy: 进程级工具权限策略（可选）。
 
     Returns:
         接收 SessionChannel 并返回 HandlerContext 的工厂函数。
@@ -54,6 +57,7 @@ def build_context_factory(
             config=config,
             agent_loop=agent_loop,
             system_prompt=system_prompt,
+            permission_policy=permission_policy,
         )
 
     return factory
@@ -114,10 +118,11 @@ async def run_server(config: ServerConfig | None = None) -> None:
         tool_registry.register(tool)
     agent_loop = AgentLoop(llm_client, tool_registry)
     system_prompt = _build_prompt_context(config, tool_context, tool_registry)
+    permission_policy = PermissionPolicy(global_default=config.permission_default)
     dispatcher = create_dispatcher()
     session_registry = SessionRegistry()
     context_factory = build_context_factory(
-        trace_store, llm_client, config, agent_loop, system_prompt
+        trace_store, llm_client, config, agent_loop, system_prompt, permission_policy
     )
     server = TCPServer(
         config.host, config.port, dispatcher, context_factory, session_registry

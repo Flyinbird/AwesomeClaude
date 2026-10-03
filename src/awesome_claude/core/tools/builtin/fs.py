@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from awesome_claude.core.permissions.types import PermissionDecision, PermissionSpec
 from awesome_claude.core.tools.base import Tool
 from awesome_claude.core.tools.context import ToolContext, ToolScope
 
@@ -49,6 +50,26 @@ def _resolve_target(root: Path, raw: object) -> Path:
             f"path 超出工作区根目录（{root_resolved}）: {resolved}"
         )
     return resolved
+
+
+def _path_resource(args: dict[str, Any], ctx: ToolContext) -> tuple[str, ...]:
+    """产出 `path:<规范绝对路径>` 资源标识供权限规则匹配。
+
+    解析失败（缺参、越界等）时回退为原始 path 值，避免权限判定阶段报错。
+
+    Args:
+        args: 工具参数。
+        ctx: 进程级工具执行环境（提供工作区根）。
+
+    Returns:
+        单元素资源标识元组。
+    """
+    raw = args.get("path")
+    candidate = raw if raw else "."
+    try:
+        return (f"path:{_resolve_target(ctx.workspace_root, candidate)}",)
+    except (TypeError, ValueError, PathOutsideRootError):
+        return (f"path:{raw}",)
 
 
 def _read_text(target: Path) -> tuple[bytes, str]:
@@ -284,6 +305,11 @@ def create_fs_tools() -> list[Tool]:
                 "required": ["path"],
             },
             handler=_read_file_handler,
+            permission=PermissionSpec(
+                default=PermissionDecision.ALLOW,
+                describe=lambda args, ctx: f"读取文件: {args.get('path')}",
+                resources=_path_resource,
+            ),
         ),
         Tool(
             name="write_file",
@@ -300,6 +326,11 @@ def create_fs_tools() -> list[Tool]:
                 "required": ["path", "content"],
             },
             handler=_write_file_handler,
+            permission=PermissionSpec(
+                default=PermissionDecision.ALLOW,
+                describe=lambda args, ctx: f"写入文件: {args.get('path')}",
+                resources=_path_resource,
+            ),
         ),
         Tool(
             name="edit_file",
@@ -317,6 +348,11 @@ def create_fs_tools() -> list[Tool]:
                 "required": ["path", "old_string", "new_string"],
             },
             handler=_edit_file_handler,
+            permission=PermissionSpec(
+                default=PermissionDecision.ALLOW,
+                describe=lambda args, ctx: f"编辑文件: {args.get('path')}",
+                resources=_path_resource,
+            ),
         ),
         Tool(
             name="list_dir",
@@ -335,5 +371,10 @@ def create_fs_tools() -> list[Tool]:
                 "required": [],
             },
             handler=_list_dir_handler,
+            permission=PermissionSpec(
+                default=PermissionDecision.ALLOW,
+                describe=lambda args, ctx: f"列出目录: {args.get('path') or '.'}",
+                resources=_path_resource,
+            ),
         ),
     ]

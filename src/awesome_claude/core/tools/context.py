@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from awesome_claude.core.permissions.manager import PermissionManager
     from awesome_claude.core.task.graph import TaskGraph
 
 
@@ -26,8 +27,10 @@ class ToolScope:
     """一次 Run 的运行态作用域，作为参数随工具执行链传入。
 
     与进程级 `ToolContext` 解耦：`run_id` 标识所属 Run，`task_graph` 是
-    本次 Run 的任务清单（可为 None，表示未启用任务计划）。
+    本次 Run 的任务清单（可为 None，表示未启用任务计划），`permissions`
+    是本次 Run 的工具权限管理者（可为 None，表示不启用权限把关）。
     """
 
     run_id: str
     task_graph: "TaskGraph | None" = None
+    permissions: "PermissionManager | None" = None

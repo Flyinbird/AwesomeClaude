@@ -177,7 +177,10 @@ class AgentLoop:
                     result = ToolResult(content=_TRUNCATED_TOOL_HINT, is_error=True)
                 else:
                     result = await self._tools.execute(
-                        tool_use["name"], tool_use["input"], scope
+                        tool_use["name"],
+                        tool_use["input"],
+                        scope,
+                        step_index=step_index,
                     )
                 tool_results.append(
                     {
