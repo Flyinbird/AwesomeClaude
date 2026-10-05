@@ -44,6 +44,7 @@ AwesomeClaude 的 Client 与 Core 之间使用 **JSON-RPC 2.0** 规范进行通�
 - 完成/失败：对话终态通过 `chat.completed` / `chat.failed` 通知推送（见下），二者互斥且各至多一次
   - `stop_reason` 取值：`end_turn` / `max_tokens` / `stop_sequence` / `tool_use` / `max_steps`（达到最大步数）/ `unknown`
 - 流程：服务端经 AgentLoop 编排多轮 LLM 调用与工具调用（含任务计划工具 add_tasks / update_task_deps / start_task / complete_task / reopen_task / suspend_task），期间持续推送 `chat.stream`、`chat.tool_started`、`chat.tool_finished` 通知（见下）；任务清单变化时推送 `chat.plan_updated`；Run 执行期间周期性推送 `chat.heartbeat`；达到最大步数时额外推送 `chat.interrupted` 通知
+- 工具执行前会做统一权限判定（进程级策略）；判定为拒绝的工具**不执行**，也不会产生协议级错误，而是作为 `is_error: true` 的工具结果回填给模型（见 `chat.tool_finished`）。权限判定细节不单独作为通知下发，仅记录在服务端执行轨迹中
 
 ```json
 {"jsonrpc": "2.0", "method": "chat", "params": {"message": "你好", "session_id": "shared-123"}, "id": 7}
@@ -88,7 +89,7 @@ Server → Client 实时推送，在 `chat` 请求处理期间逐块发送，最
 
 ## Notification：chat.tool_started / chat.tool_finished
 
-Server → Client 推送，报告 Agent Loop 中的工具调用进度。
+Server → Client 推送，报告 Agent Loop 中的工具调用进度。工具执行失败（含参数截断跳过、执行异常、**权限被拒绝**）都会以 `is_error: true` 的 `chat.tool_finished` 呈现，Run 继续执行。
 
 ```json
 {

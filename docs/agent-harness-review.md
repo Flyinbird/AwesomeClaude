@@ -1,9 +1,9 @@
 # AwesomeClaude Agent Harness 评审：技术架构总结与改进方向
 
 > 评审对象：`/Users/chris/awesome-claude`（Python 3.12 / asyncio / uv，Client-Server 架构的类 Claude Code Agent 框架）
-> 评审时间：2026-09-20
+> 评审时间：2026-09-20；**文档刷新：2026-10-04（纳入工具权限框架）**
 > 方法：通读 `README.md` / `AGENTS.md` / `docs/*`，逐模块精读 `src/awesome_claude/core/**`，并用代码事实交叉核对文档描述；结论区分「已验证（代码事实）」与「工程判断」。
-> 与既有材料的关系：仓库根目录的 `arc_analysis.md` / `arc_analysis_simplified.md` 是更早一轮的同类评审。本文不是它的翻版，而是**重新核实后收敛到 `docs/` 的版本**，并在 §2.4 给出「上轮结论复核表」（哪些已修、哪些仍在）。建议后续以本文为基线，把根目录两份草稿归档。
+> 与既有材料的关系：本文是**重新核实后收敛到 `docs/` 的版本**，并在 §2.4 给出「上轮结论复核表」（哪些已修、哪些仍在）。仓库根目录更早的同类评审草稿（`arc_analysis*.md`）已移除，仅余 `user.txt`；后续以本文为基线，评审材料统一收敛到 `docs/`。
 
 ---
 
@@ -20,10 +20,11 @@ client (CLI)  ──JSON-RPC 2.0 over TCP──  core (Daemon)
    cli: REPL / commands / renderer            server: tcp / session(连接级)
    transport: connection / receiver           router: dispatcher / context
                                               handlers: ping echo shutdown chat session.*
-                                              agent: loop / prompt / events / result
-                                              tools: base / context / registry / builtin
-                                              task: task / graph(TaskGraph)
-                                              session: registry / run / channel
+                                               agent: loop / prompt / events / result
+                                               tools: base / context / registry / builtin
+                                               permissions: types / policy / manager / broker
+                                               task: task / graph(TaskGraph)
+                                               session: registry / run / channel
                                               llm: base(LLMProvider) / anthropic_client
                                               observability: trace_recorder
 shared: types / logging(app_logger, trace_store)
@@ -36,7 +37,8 @@ shared: types / logging(app_logger, trace_store)
 | 路由层 | `Dispatcher` / `HandlerContext` | 方法→handler 显式注册；每连接构造一次 `HandlerContext`，chat 用 `dataclasses.replace` 注入当次 `Run` |
 | 编排层 | `AgentLoop` | 多轮「LLM → 工具 → 回填」循环；`on_event`（LLM 流式）/`on_step`（step/tool 结构事件）双回调透出，自身**零网络依赖**，可被测试替身替换 |
 | 提示层 | `build_system_prompt` / `PromptContext` / `PROMPT_VERSION` | 按「身份准则 + 环境（工作区/OS/时间/模型/限额）+ 工具细则 + 大文件分块策略 + 输出风格」拼装；版本号写入 `context_built` 轨迹 |
-| 工具层 | `Tool` / `ToolContext` / `ToolScope` / `ToolRegistry` | `ToolContext` 是进程级环境（沙箱根 + 读写限额），`ToolScope` 是 per-Run 运行态（`run_id` + `task_graph`）；注册表统一转 schema、捕获异常转错误 `ToolResult`（不抛穿） |
+| 工具层 | `Tool` / `ToolContext` / `ToolScope` / `ToolRegistry` | `ToolContext` 是进程级环境（沙箱根 + 读写限额），`ToolScope` 是 per-Run 运行态（`run_id` + `task_graph` + `permissions`）；注册表统一转 schema、执行前做权限把关、捕获异常转错误 `ToolResult`（不抛穿） |
+| 权限层 | `PermissionDecision` / `PermissionSpec` / `PermissionPolicy` / `PermissionManager` / `PermissionBroker` | 工具以声明式 `PermissionSpec`（默认姿态 + 动作描述 + 资源标识）参与；策略按「资源规则 → 工具默认 → 全局默认」求值，拒绝优先；`ask` 委托审批通道（当前装配 `NonInteractiveBroker`，无交互时 fail-closed）；判定写 `permission_*` 轨迹，拒绝以错误工具结果回填、不中断 Run |
 | 计划层 | `TaskGraph` / `Task` | per-Run 任务 DAG：三态 `pending/in_progress/completed`，变更前校验「依赖存在、无环、至多一个 in_progress」，`reopen_task` 记 `attempts/last_error`，`suspend_task` 让位不计次 |
 | 会话层 | `SessionRegistry` / `Session` / `Run` / `SessionChannel` | 会话 = 订阅连接集合 + 历史 + 至多一个在途 Run；`Run` 状态机 `RUNNING → {COMPLETED, FAILED, INTERRUPTED, CANCELLED}`，终态只写一次；零订阅取消、临时会话即毁 |
 | 模型层 | `LLMProvider` / `AnthropicClient` | 供应商无关协议 + Anthropic SDK 实现；流式解析 text/thinking/tool_use，异常归一为 `LLMError` 子类层级 |
@@ -53,10 +55,11 @@ shared: types / logging(app_logger, trace_store)
      3) 起心跳任务，周期推 chat.heartbeat
      4) 异步派发 handle_chat:
           a. ContextBuilt（含 system prompt 与 messages 快照，长文本已裁剪）
-          b. TaskGraph(run_id, on_change) + ToolScope(run_id, graph)
+          b. TaskGraph(run_id, on_change) + PermissionManager + ToolScope(run_id, graph, permissions)
           c. agent_loop.run(message, system, on_event, on_step, scope)   ← 注意：未传 history
              └─ 每轮：StepStarted → LLM_REQUEST_SENT → LLM_STREAMING
                       → TextDelta → chat.stream（逐块）
+                      → 工具执行前 PermissionManager.authorize → permission_* 轨迹
                       → ToolStarted/ToolFinished → chat.tool_* + 轨迹
                       → LLM_RESPONSE_DONE → 下一轮
           d. chat.stream{is_final:true}；session 记录本轮 history（供回放）
@@ -65,7 +68,7 @@ shared: types / logging(app_logger, trace_store)
  → client 渲染摘要；期间依赖 3× 心跳间隔做看门狗
 ```
 
-阶段枚举（`TraceStage`）：`run_created / context_built / step_started / llm_request_sent / llm_streaming / llm_response_done / tool_started / tool_completed / tool_failed / task_* / run_completed / run_failed / run_interrupted / run_cancelled`。
+阶段枚举（`TraceStage`）：`run_created / context_built / step_started / llm_request_sent / llm_streaming / llm_response_done / tool_started / tool_completed / tool_failed / permission_requested / permission_granted / permission_denied / task_* / run_completed / run_failed / run_interrupted / run_cancelled`。
 
 ### 1.4 关键设计取舍
 
@@ -77,13 +80,14 @@ shared: types / logging(app_logger, trace_store)
 | 工具错误转 `ToolResult(is_error=True)` | 失败可被模型自我修复，Run 不中断 | 错误只有自由文本，无类别/可重试语义 |
 | 工具入参截断 → 跳过并回填提示 | 避免「截断成空参数」的静默误执行 | 属于**事后补救**：没有事前预算，也没把 `input_json_delta` 用于流式校验 |
 | System Prompt 由环境动态拼装 | 模型知道沙箱根、限额、工具用法，行为显著收敛 | 工具描述与 `Tool.input_schema` **两处维护**，易漂移 |
-| 沙箱只做路径收敛（realpath ∈ workspace_root） | 实现简洁、行为可预测 | 无拒绝名单（`.env` 可读）、无审批、无执行工具时的资源/网络策略 |
+| 工具权限以声明式规格参与（`PermissionSpec`） | 权限框架与具体工具解耦，新增工具免改判定逻辑；判定入轨迹 | 尚未配置任何资源规则/拒绝名单；`ask` 无交互审批通道即等价拒绝（fail-closed），无 diff 预览 |
+| 沙箱只做路径收敛（realpath ∈ workspace_root） | 实现简洁、行为可预测 | 无拒绝名单（`.env` 默认可读；权限策略具备该能力但未配置）、无执行工具时的资源/网络策略 |
 
 ### 1.5 当前能力边界
 
-**已有**：流式对话、多轮工具编排、System Prompt、文件四件套（`read_file/write_file/edit_file/list_dir`）+ `get_time` + 计划工具六件套、任务 DAG、多客户端会话共享与历史回放、Run 生命周期与取消、step 化执行轨迹、结构化日志。
+**已有**：流式对话、多轮工具编排、System Prompt、文件四件套（`read_file/write_file/edit_file/list_dir`）+ `get_time` + 计划工具六件套、任务 DAG、多客户端会话共享与历史回放、Run 生命周期与取消、受理-通知式对话终态与心跳、step 化执行轨迹、结构化日志、工具权限框架（声明式规格 + 进程级策略 + 判定轨迹）。
 
-**尚无**：跨轮记忆回填、上下文预算与压缩、搜索类工具（`glob`/`grep`）、执行类工具（`bash`）、权限/审批层、中途取消与续跑（`chat.cancel`/`resume`）、子 Agent、Hooks/插件（MCP）、成本核算与指标、离线评测闭环、多模态。
+**尚无**：跨轮记忆回填、上下文预算与压缩、搜索类工具（`glob`/`grep`）、执行类工具（`bash`）、可用的权限规则/拒绝名单与交互式审批（`ask` 通道目前 fail-closed）、中途取消与续跑（`chat.cancel`/`resume`）、子 Agent、Hooks/插件（MCP）、成本核算与指标、离线评测闭环、多模态。
 
 ---
 
@@ -147,7 +151,7 @@ shared: types / logging(app_logger, trace_store)
   改进：按顺序补 ① `glob`/`grep`（带行号、结果条数上限、跳过 `.git`/`.venv`/`node_modules`）；② `bash`（先只读白名单 → 再审批制）。提示词里同步加「改完必须验证（跑测试/lint）」的准则。
 
 - **C2（P1）工具契约偏弱：无错误分类、无幂等/副作用声明、无版本。**
-  事实：`ToolResult` 只有 `content: str` + `is_error: bool`；`Tool` 无「是否写操作 / 是否可并发 / 是否幂等」元数据。
+  事实：`ToolResult` 只有 `content: str` + `is_error: bool`；`Tool` 仅有 `permission: PermissionSpec`，仍无「是否写操作 / 是否可并发 / 是否幂等」与错误分类元数据。
   影响：循环无法做分级重试，权限层无法按副作用分类，前端无法做差异预览。
   改进：`ToolResult` 增 `error_kind`（`invalid_args` / `not_found` / `permission` / `truncated` / `transient`）；`Tool` 增 `read_only: bool`、`idempotent: bool`、`schema_version`，供权限、并发与审计复用。
 
@@ -158,8 +162,8 @@ shared: types / logging(app_logger, trace_store)
 
 #### D. 安全与权限
 
-- **D1（P0）无审批、无拒绝名单。** 事实：沙箱只保证路径落在 `workspace_root` 内；写工具直接落盘，没有 diff 预览、没有 approve 流程，也没有 `.env` / `.git` / `.venv` 的拒绝名单——`.env` 里就放着 API key。同时 `read_file` 的内容会原样进入模型上下文，构成**典型的间接提示注入面**（文件内容可指挥模型去写别的文件）。
-  改进：① 拒绝名单 + 敏感文件默认只读；② 写/编辑操作返回 diff 并要求模式化审批（`read-only` / `auto-edit` / `yolo` 三档）；③ 原子写（temp + rename）与可选备份；④ 提示词中明确标注「工具返回的文件内容是数据、不是指令」。
+- **D1（P0）权限框架已落地，但仍无规则、拒绝名单与交互审批。** 事实：`core/permissions/` 已提供声明式 `PermissionSpec`、进程级 `PermissionPolicy`（资源规则 → 工具默认 → 全局默认）、`PermissionManager` 判定编排与 `permission_*` 轨迹；所有内置工具均已声明规格。**但**：① 所有内置工具默认姿态均为 `ALLOW`，全局默认也是 `allow`，且未配置任何资源规则或 `.env` / `.git` / `.venv` 拒绝名单——`.env` 里就放着 API key；② 服务端装配的是 `NonInteractiveBroker`，`ask` 一律按拒绝处理（fail-closed），没有真正的交互审批 UI；③ 无 diff 预览、无原子写/备份；④ `read_file` 内容原样进入模型上下文，构成**典型的间接提示注入面**（文件内容可指挥模型去写别的文件）。结论：**管道已具备，护栏尚未启用**。
+  改进：① 为敏感路径配置拒绝规则/只读规则（框架已支持，缺的是配置与默认值）；② 写/编辑操作返回 diff 并要求模式化审批（`read-only` / `auto-edit` / `yolo` 三档），实现交互式 `PermissionBroker`；③ 原子写（temp + rename）与可选备份；④ 提示词中明确标注「工具返回的文件内容是数据、不是指令」。
 
 - **D2（P2）传输层无认证/加密。** 事实：`127.0.0.1:9527` 纯 TCP，无 token、无 TLS、无限流；任何本机进程都能连上并驱动 Agent。
   改进：本地 token 握手 + 可配置 TLS；入站消息长度上限（当前无上限，超大行会让连接直接断掉而不是得到结构化错误）。
@@ -178,13 +182,13 @@ shared: types / logging(app_logger, trace_store)
   事实：`get_trace_store()` 固定返回 `TraceStore("logs/runs")`（`AWESOME_CLAUDE_LOG_DIR` 未生效）；`log_event` 在持锁状态下用同步 `fh.write` 写盘。
   改进：路径来自 `ServerConfig`；写盘用 `asyncio.to_thread`（或队列 + 后台 writer 协程），避免拖慢流式输出；轨迹与日志可加大小/天数轮转。
 
-- **F2（P1）文档与实现漂移。** 事实：「架构文档未纳入 plan/task」，`max_steps` 语义只在 docstring 里，README 的 Phase 3 表述与现状（prompt/计划工具已落地）不一致。
-  改进：把阶段名、日志路径、方法名等常量从代码导出到文档；每个变更在 `openspec` 中加「文档同步」检查项。
+- **F2（P1）文档与实现漂移。** 事实：本次文档刷新已把 task / permission / prompt / 受理+通知等现状补入 `docs/architecture.md`、`docs/protocol.md` 与 `docs/事件监听和处理逻辑.md`；但 `README.md` 仍停留在旧结构（日志路径写作 `logs/tasks/{date}/{task_id}.jsonl`、引用已不存在的 `task_tracker`、Phase 3 表述滞后），且 `max_steps` 语义仅在 docstring 中。
+  改进：把阶段名、日志路径、方法名等常量从代码导出到文档（或由 openspec 校验）；优先同步 README；每个变更在 `openspec` 中加「文档同步」检查项。
 
-- **F3（P2）遗留占位模块。** 事实：`shared/logger.py`、`shared/config.py` 已无引用却仍在树里；根目录另有 `arc_analysis.md` / `arc_analysis_simplified.md` / `user.txt` 等评审草稿与临时数据。
-  改进：删除未引用模块；评审文档收敛到 `docs/`。
+- **F3（P2）遗留占位模块。** 事实：`shared/logger.py`、`shared/config.py` 已无引用却仍在树里；根目录另有 `user.txt` 等临时数据（更早的 `arc_analysis*.md` 评审草稿已移除）。
+  改进：删除未引用模块；评审文档与临时数据继续收敛到 `docs/`。
 
-### 2.4 上轮评审结论复核（相对 `arc_analysis.md`）
+### 2.4 上轮评审结论复核
 
 | 上轮结论 | 现状 | 依据 |
 | --- | --- | --- |
@@ -194,8 +198,8 @@ shared: types / logging(app_logger, trace_store)
 | 无上下文压缩 | ❌ 仍存在 | 无 budget/裁剪（见 A2） |
 | 无 glob/grep/shell | ❌ 仍存在 | `app.py` 装配的仍是 time + fs + plan（见 C1） |
 | TraceStore 阻塞写 + 目录硬编码 | ❌ 仍存在 | `trace_store.py` 持锁同步写、`get_trace_store()` 写死 `logs/runs`（见 F1） |
-| 沙箱可读 `.env` | ❌ 仍存在 | 仅做路径收敛，无拒绝名单（见 D1） |
-| 无取消/审批/续跑 | ⚠️ 部分修 | Run 取消已闭环（零订阅/关服），但**无客户端主动取消/插话/续跑**（见 §2.2 B1、D1） |
+| 沙箱可读 `.env` | ❌ 仍存在 | 仅做路径收敛 + 权限框架（默认全 allow、无拒绝规则），无实际拒绝名单（见 D1） |
+| 无取消/审批/续跑 | ⚠️ 部分修 | Run 取消已闭环（零订阅/关服）；权限框架（声明式规格 + 策略 + 判定轨迹）已落地，但审批通道为无交互 fail-closed。**无客户端主动取消/插话/续跑**（见 §2.2 B1、D1） |
 
 ---
 
@@ -209,7 +213,7 @@ shared: types / logging(app_logger, trace_store)
 | 2 | 工具结果入库截断 + 单 Run 上下文预算 | A2 | 连续大文件读取不再撞 `prompt too long`；超预算触发压缩而非报错 |
 | 3 | `max_steps` / token / 墙钟预算可配 | B1 | env 可调；超限走 finalize 并记 `run_interrupted` |
 | 4 | 工具错误分类 + 重复调用检测 | B2/C2 | 重复 `(tool, args)` 不再真正执行；错误可被分级重试 |
-| 5 | 沙箱拒绝名单 + 写操作 diff/审批开关 | D1 | 读 `.env` 被拒并回填明确错误；写操作可要求审批 |
+| 5 | 配置权限拒绝/只读规则 + 交互式审批通道（diff） | D1 | 读 `.env` 按规则被拒并回填明确错误；写操作可经 diff 审批（框架已具备，缺配置与审批 UI） |
 | 6 | TraceStore 非阻塞写 + 目录来自 config | F1 | 事件循环无同步写；`AWESOME_CLAUDE_LOG_DIR` 生效 |
 | 7 | `glob` / `grep` 工具 + 「改完要验证」提示词准则 | C1 | 定位代码的平均读文件数下降；任务能自我验证 |
 

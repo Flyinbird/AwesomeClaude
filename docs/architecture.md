@@ -2,7 +2,7 @@
 
 ## 架构概述
 
-AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 `core/`（常驻守护进程）通过 TCP Socket 传输 JSON-RPC 2.0 消息通信，两者只能依赖 `protocol/` 包中定义的共享协议（消息编解码、方法名与参数/返回类型、错误码），不能互相直接 import。客户端负责命令解析、请求发送、响应与流式输出渲染；核心服务端负责 TCP 监听、请求路由、业务处理器分发，通过 `core/agent/`（AgentLoop 多轮 LLM + 工具编排）、`core/tools/`（ToolRegistry 工具注册与执行）、`core/session/`（多客户端会话共享）、`core/llm/`（LLMProvider 协议 + AnthropicClient 流式调用 Anthropic API）、`core/observability/`（TraceRecorder Run 轨迹记录）、`shared/logging/`（structlog 结构化日志 + TraceStore JSONL）支撑完整链路。所有网络 I/O 基于 asyncio，支持多客户端并发与 SIGTERM/SIGINT 优雅退出。
+AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 `core/`（常驻守护进程）通过 TCP Socket 传输 JSON-RPC 2.0 消息通信，两者只能依赖 `protocol/` 包中定义的共享协议（消息编解码、方法名与参数/返回类型、错误码），不能互相直接 import。客户端负责命令解析、请求发送、响应与流式输出渲染；核心服务端负责 TCP 监听、请求路由、业务处理器分发，通过 `core/agent/`（AgentLoop 多轮 LLM + 工具编排）、`core/tools/`（ToolRegistry 工具注册与执行）、`core/permissions/`（工具权限策略与审批通道）、`core/task/`（TaskGraph 任务计划）、`core/session/`（多客户端会话共享）、`core/llm/`（LLMProvider 协议 + AnthropicClient 流式调用 Anthropic API）、`core/observability/`（TraceRecorder Run 轨迹记录）、`shared/logging/`（structlog 结构化日志 + TraceStore JSONL）支撑完整链路。所有网络 I/O 基于 asyncio，支持多客户端并发与 SIGTERM/SIGINT 优雅退出。
 
 ## 架构图
 
@@ -28,6 +28,8 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 |                           |  通知（Server→Client，实时推送）                          |
 |                           |   chat.stream / chat.tool_* / chat.user_message          |
 |                           |   chat.plan_updated（任务计划快照）                       |
+|                           |   chat.completed / chat.failed / chat.interrupted        |
+|                           |   chat.heartbeat（Run 执行期心跳）                        |
 +-----------+---------------+                             +--------------+-------------+
             |                                                     |
             |  protocol/jsonrpc.py · 消息构造/解析/校验             |
@@ -39,6 +41,7 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
             |  core/agent/loop.py   · AgentLoop 多轮编排           |
             |  core/agent/prompt.py · System Prompt 构造           |
             |  core/tools/          · ToolRegistry 工具注册/执行     |
+            |  core/permissions/    · 工具权限策略 / 审批 / 轨迹      |
             |  core/task/           · TaskGraph 任务 DAG / 状态机     |
             |  core/session/        · SessionRegistry 会话共享      |
             |  core/llm/anthropic_client.py · Anthropic SDK 流式封装   |
@@ -56,27 +59,34 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `protocol/methods.py` | 方法名常量与参数/返回类型 TypedDict，client/core 共用 |
 | `protocol/errors.py` | 标准错误码与 LLM 应用错误码、`build_error_response` |
 | `core/server/tcp.py` | TCP 监听、多客户端并发、优雅停止 |
-| `core/server/session.py` | 逐行读取 → 解析 → 分发 → 回写；控制类请求内联、chat 任务化为 Run；断连取消与发送串行化 |
+| `core/server/session.py` | 逐行读取 → 解析 → 分发 → 回写；控制类请求内联、chat 受理为 Run（立即回受理 ack + 心跳 + 终态广播）；断连取消与发送串行化 |
 | `core/router/dispatcher.py` | 方法分发，未注册方法返回 METHOD_NOT_FOUND |
-| `core/router/context.py` | HandlerContext（trace_store / llm_client / sessions / config / agent_loop / run / system_prompt） |
+| `core/router/context.py` | HandlerContext（trace_store / llm_client / sessions / config / agent_loop / run / system_prompt / permission_policy） |
 | `core/agent/loop.py` | AgentLoop：多轮 LLM + 工具编排，`on_event` / `on_step` 回调透出事件，撞 max_steps 时收尾/截断；跳过参数被 `max_tokens` 截断的工具调用并回填拆分提示 |
 | `core/agent/prompt.py` | System Prompt 构造：PromptContext / build_system_prompt / PROMPT_VERSION（环境、工具细则、大文件分块策略） |
 | `core/agent/events.py` | StepStarted / StepFinished / ToolStarted / ToolFinished |
 | `core/agent/result.py` | AgentResult（文本、消息历史、用量、步数、StopReason） |
-| `core/tools/registry.py` | ToolRegistry：注册 / 查询 / 执行（注入 ToolContext + ToolScope）/ 转 Anthropic tools schema |
+| `core/tools/base.py` | Tool（含 `permission: PermissionSpec`）/ ToolResult / ToolHandler 类型 |
+| `core/tools/context.py` | ToolContext（进程级环境）+ ToolScope（per-Run：run_id / task_graph / permissions） |
+| `core/tools/registry.py` | ToolRegistry：注册 / 查询 / 执行（注入 ToolContext + ToolScope，执行前做权限把关）/ 转 Anthropic tools schema |
 | `core/tools/builtin/time.py` | 内置 `get_time` 工具 |
+| `core/tools/builtin/fs.py` | 文件四件套工具：read_file / write_file / edit_file / list_dir（沙箱路径约束 + 声明式权限规格） |
 | `core/tools/builtin/plan.py` | 任务计划工具：add_tasks / update_task_deps / start_task / complete_task / reopen_task / suspend_task |
+| `core/permissions/types.py` | PermissionDecision（allow/deny/ask）/ PermissionSpec / PermissionRequest / PermissionOutcome |
+| `core/permissions/policy.py` | PermissionPolicy：按「资源规则 → 工具默认 → 全局默认」求值，资源规则拒绝优先 |
+| `core/permissions/manager.py` | PermissionManager：Run 作用域授权编排（策略判定 → 询问态委托审批 → 记录权限轨迹） |
+| `core/permissions/broker.py` | PermissionBroker 协议 + NonInteractiveBroker（无交互时询问一律按拒绝，fail-closed） |
 | `core/task/graph.py` | TaskGraph：Run 内任务依赖 DAG 的校验与状态转换，变更经 on_change 派发 |
 | `core/task/task.py` | Task / TaskStatus：三态任务与 attempts / last_error 元数据 |
 | `core/session/registry.py` | ConnectionSink / Session / SessionRegistry（订阅、在途 Run、广播、状态、零订阅取消与临时会话销毁） |
 | `core/session/run.py` | Run / RunState / RunInitiator：会话拥有的对话执行实体与唯一终态状态机 |
 | `core/session/channel.py` | SessionChannel：每连接门面，广播（含指定会话）或单播 |
-| `core/handlers/chat.py` | chat 完整流程：System Prompt 构造（PromptContext）+ Run 轨迹记录 + 任务计划（TaskGraph）+ 委托 AgentLoop + 通知广播 |
+| `core/handlers/chat.py` | chat 完整流程：System Prompt 构造（PromptContext）+ Run 轨迹记录 + 任务计划（TaskGraph）+ 权限管理者（PermissionManager）+ 委托 AgentLoop + 通知广播 |
 | `core/handlers/session.py` | session.attach / session.detach |
 | `core/llm/base.py` | LLMProvider 协议：供应商无关的流式/非流式客户端接口 |
 | `core/llm/anthropic_client.py` | AnthropicClient：Anthropic SDK 封装（`chat_stream` 文本/思考/工具事件、`chat`、异常映射；工具入参 JSON 截断置 `truncated=True`） |
 | `core/observability/trace_recorder.py` | Run 作用域轨迹记录（绑定 run_id 与起点，含 step 维度） |
-| `core/app.py` | 装配 TraceStore/AnthropicClient/ToolRegistry/AgentLoop/SessionRegistry/TCPServer |
+| `core/app.py` | 装配 TraceStore/AnthropicClient/ToolRegistry/AgentLoop/PermissionPolicy/SessionRegistry/TCPServer |
 | `core/config.py` | ServerConfig + `load_server_config()`（.env / 环境变量） |
 | `client/cli/app.py` | REPL 主循环，attach 会话、注册各类通知处理器 |
 | `client/transport/receiver.py` | 后台读取，response → Future，notification → handler |
@@ -96,17 +106,21 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
       2. 立即回写受理 ack（run_id / accepted / heartbeat_interval_ms）→ client 解除阻塞
       3. 启动心跳任务（每 heartbeat_interval 推送 chat.heartbeat）
       4. 异步派发 handle_chat：
-           a. record_stage(CONTEXT_BUILT)  → 构建上下文
+           a. record_stage(CONTEXT_BUILT)  → 由 PromptContext 构造 System Prompt
            b. （若带 session_id）channel.attach(session_id) 订阅会话
-           c. agent_loop.run(message, on_event, on_step)
+           c. 构造 TaskGraph(on_change) + PermissionManager + ToolScope(run_id, task_graph, permissions)
+           d. agent_loop.run(message, system, on_event, on_step, scope)
                └─ 每轮 step：
                   on_step(StepStarted) → record_stage(STEP_STARTED / LLM_REQUEST_SENT / LLM_STREAMING, step_index)
                   on_event(TextDeltaEvent) → broadcast("chat.stream", {…, is_final:false})
-                  on_step(ToolStarted/ToolFinished) → record_stage(TOOL_*) + broadcast("chat.tool_*")
+                  on_step(ToolStarted) → record_stage(TOOL_STARTED) + broadcast("chat.tool_started")
+                  （ToolRegistry.execute 前经 PermissionManager.authorize → record PERMISSION_*；拒绝则回填错误结果）
+                  on_step(ToolFinished) → record_stage(TOOL_COMPLETED/TOOL_FAILED) + broadcast("chat.tool_finished")
+                  TaskGraph 变更 → record_stage(TASK_*) + broadcast("chat.plan_updated")
                   on_step(StepFinished) → record_stage(LLM_RESPONSE_DONE, step_index)
-           d. broadcast("chat.stream", {…, is_final:true})  → 流结束
-           e. （若带 session_id）channel.record_turn(user, assistant, run_id) 记录会话历史
-           f. recorder.run_completed() / run_interrupted() / run_failed()
+           e. broadcast("chat.stream", {…, is_final:true})  → 流结束
+           f. （若带 session_id）channel.record_turn(user, assistant, run_id) 记录会话历史
+           g. recorder.run_completed() / run_interrupted() / run_failed()
       5. session 停心跳后广播终态：
            chat.completed（含 run_id / text / stop_reason / usage / duration_ms / model）
            或 chat.failed（含 run_id / error）
@@ -128,6 +142,9 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `tool_started` | 工具调用开始，记录 tool_name、args |
 | `tool_completed` | 工具调用成功，记录 tool_name |
 | `tool_failed` | 工具调用失败，记录 tool_name |
+| `permission_requested` | 一次工具调用进入权限判定，记录 tool / resources / decision |
+| `permission_granted` | 权限判定为允许，工具即将执行 |
+| `permission_denied` | 权限判定为拒绝，工具不执行、以错误结果回填 |
 | `task_added` | 任务加入计划，记录 goal / deps |
 | `task_started` | 任务开始执行 |
 | `task_completed` | 任务完成 |
@@ -139,6 +156,14 @@ AwesomeClaude 采用 **Client-Server 架构**：`client/`（命令行 CLI）与 
 | `run_cancelled` | 在途 Run 被取消（断连零订阅 / 服务端退出），记录 session_id |
 
 每个阶段事件以 JSON 行写入 `logs/runs/{date}/{run_id}.jsonl`，含 `run_id / stage / timestamp / duration_ms / data / step_index`。`step_index` 用于区分多轮 Agent Loop 中的轮次（顶层阶段为 null）。
+
+## 工具权限把关
+
+- 工具以声明式 `PermissionSpec` 参与权限体系：`default` 给出无更具体规则时的默认姿态，`describe(args, ctx)` 产出面向人的动作描述，`resources(args, ctx)` 产出用于规则匹配的 `type:value` 资源标识（如 `path:/ws/xxx`）。未声明规格的工具按全局默认姿态处理。
+- `PermissionPolicy` 按固定优先级求值：命中的资源规则（拒绝 > 询问 > 允许）→ 每工具默认 → 工具规格默认 → 全局默认姿态。全局默认由 `AWESOME_CLAUDE_PERMISSION_DEFAULT`（`allow` / `deny` / `ask`）配置，默认 `allow`。
+- 判定结果三态 `allow / deny / ask`。`ask` 委托 `PermissionBroker`；服务端当前装配 `NonInteractiveBroker`，无交互通道时**一律按拒绝处理**（fail-closed）。
+- 每次判定记录 `permission_requested` → `permission_granted` / `permission_denied` 轨迹。判定为拒绝时，`ToolRegistry.execute` 返回 `is_error=True` 的 `ToolResult`（内容形如「权限被拒绝: …」），**不**抛穿、**不**中断 Run，模型可据此调整策略。
+- 权限绑定到 Run：`chat` 处理时按 `run_id` 构造 `PermissionManager` 注入 `ToolScope`，随工具执行链显式传递，不在 Run 之间泄漏。
 
 ## 多客户端会话与 Run 生命周期
 
