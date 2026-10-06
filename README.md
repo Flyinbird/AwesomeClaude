@@ -53,6 +53,7 @@ uv run python -m awesome_claude.client.cli --session my-session  # 指定共享�
 | `AWESOME_CLAUDE_MODEL` | | `claude-sonnet-4-20250514` | 模型名（DeepSeek 用 `deepseek-chat`） |
 | `AWESOME_CLAUDE_BASE_URL` | | 空 | 自定义 API 基地址（如 DeepSeek 的 `https://api.deepseek.com/anthropic`） |
 | `AWESOME_CLAUDE_MAX_TOKENS` | | `4096` | 最大输出 token 数 |
+| `AWESOME_CLAUDE_MAX_STEPS` | | `25` | Agent 循环最大步数 |
 | `AWESOME_CLAUDE_LOG_LEVEL` | | `INFO` | 日志级别 |
 | `AWESOME_CLAUDE_LOG_DIR` | | `logs` | 日志根目录 |
 

@@ -11,6 +11,7 @@ _ENV_KEYS = [
     "AWESOME_CLAUDE_PORT",
     "AWESOME_CLAUDE_MODEL",
     "AWESOME_CLAUDE_MAX_TOKENS",
+    "AWESOME_CLAUDE_MAX_STEPS",
     "AWESOME_CLAUDE_LOG_LEVEL",
     "AWESOME_CLAUDE_LOG_DIR",
     "AWESOME_CLAUDE_BASE_URL",
@@ -39,6 +40,7 @@ class TestLoadServerConfig:
         monkeypatch.setenv("AWESOME_CLAUDE_PORT", "9999")
         monkeypatch.setenv("AWESOME_CLAUDE_MODEL", "claude-3-5-sonnet-latest")
         monkeypatch.setenv("AWESOME_CLAUDE_MAX_TOKENS", "2048")
+        monkeypatch.setenv("AWESOME_CLAUDE_MAX_STEPS", "7")
         monkeypatch.setenv("AWESOME_CLAUDE_LOG_LEVEL", "DEBUG")
         monkeypatch.setenv("AWESOME_CLAUDE_LOG_DIR", "/tmp/logs")
 
@@ -48,6 +50,7 @@ class TestLoadServerConfig:
         assert config.port == 9999
         assert config.model == "claude-3-5-sonnet-latest"
         assert config.max_tokens == 2048
+        assert config.max_steps == 7
         assert config.log_level == "DEBUG"
         assert config.log_dir == "/tmp/logs"
 
@@ -59,6 +62,7 @@ class TestLoadServerConfig:
         assert config.model == "claude-sonnet-4-20250514"
         assert config.base_url is None
         assert config.max_tokens == 4096
+        assert config.max_steps == 25
         assert config.log_level == "INFO"
         assert config.log_dir == "logs"
         assert config.heartbeat_interval == 15.0

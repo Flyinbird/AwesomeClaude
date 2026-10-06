@@ -120,7 +120,7 @@ async def run_server(config: ServerConfig | None = None) -> None:
     tool_registry = ToolRegistry(tool_context)
     for tool in [create_time_tool(), *create_fs_tools(), *create_plan_tools()]:
         tool_registry.register(tool)
-    agent_loop = AgentLoop(llm_client, tool_registry)
+    agent_loop = AgentLoop(llm_client, tool_registry, max_steps=config.max_steps)
     system_prompt = _build_prompt_context(config, tool_context, tool_registry)
     permission_policy = PermissionPolicy(global_default=config.permission_default)
     dispatcher = create_dispatcher()
