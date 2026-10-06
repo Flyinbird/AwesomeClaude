@@ -20,7 +20,6 @@ from awesome_claude.core.llm.exceptions import (
     LLMTimeoutError,
 )
 from awesome_claude.core.observability.trace_recorder import TraceRecorder
-from awesome_claude.core.permissions.broker import NonInteractiveBroker
 from awesome_claude.core.permissions.manager import PermissionManager
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.session.run import RunState
@@ -242,10 +241,10 @@ async def handle_chat(
 
     task_graph = TaskGraph(run_id, on_change=on_task_change)
     permission_manager: PermissionManager | None = None
-    if context.permission_policy is not None:
+    if context.permission_policy is not None and context.permission_broker is not None:
         permission_manager = PermissionManager(
             context.permission_policy,
-            NonInteractiveBroker(),
+            context.permission_broker,
             recorder=recorder,
         )
     scope = ToolScope(
@@ -439,6 +438,8 @@ async def handle_chat(
             )
             if run is not None:
                 run.finish(RunState.COMPLETED)
+        if permission_manager is not None:
+            permission_manager.cancel_pending_for_run(run_id)
         return asdict(response)
     except LLMError as exc:
         await recorder.run_failed(
@@ -448,6 +449,8 @@ async def handle_chat(
         )
         if run is not None:
             run.finish(RunState.FAILED)
+        if permission_manager is not None:
+            permission_manager.cancel_pending_for_run(run_id)
         return build_error_response(None, _error_code(exc), str(exc))
     except Exception as exc:
         _logger.exception("chat handler failed")
@@ -458,4 +461,6 @@ async def handle_chat(
         )
         if run is not None:
             run.finish(RunState.FAILED)
+        if permission_manager is not None:
+            permission_manager.cancel_pending_for_run(run_id)
         return build_error_response(None, INTERNAL_ERROR, f"Internal error: {exc}")

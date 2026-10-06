@@ -327,7 +327,7 @@ def create_fs_tools() -> list[Tool]:
             },
             handler=_write_file_handler,
             permission=PermissionSpec(
-                default=PermissionDecision.ALLOW,
+                default=PermissionDecision.ASK,
                 describe=lambda args, ctx: f"写入文件: {args.get('path')}",
                 resources=_path_resource,
             ),
@@ -349,7 +349,7 @@ def create_fs_tools() -> list[Tool]:
             },
             handler=_edit_file_handler,
             permission=PermissionSpec(
-                default=PermissionDecision.ALLOW,
+                default=PermissionDecision.ASK,
                 describe=lambda args, ctx: f"编辑文件: {args.get('path')}",
                 resources=_path_resource,
             ),

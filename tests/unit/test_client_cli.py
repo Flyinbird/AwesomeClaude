@@ -141,6 +141,29 @@ class TestWatchConnection:
         await asyncio.gather(task, return_exceptions=True)
 
 
+class TestPermissionRequested:
+    """审批通知处理不得阻塞接收器读循环。"""
+
+    async def test_handler_schedules_without_blocking(self, monkeypatch) -> None:
+        app = CLIApp("127.0.0.1", 1)
+        started = asyncio.Event()
+
+        async def fake_collect(request_id: str) -> None:
+            started.set()
+
+        monkeypatch.setattr(app, "_collect_permission_decision", fake_collect)
+
+        await asyncio.wait_for(
+            app._handle_permission_requested(
+                {"request_id": "req1", "tool_name": "write_file", "action": "写入"}
+            ),
+            timeout=1.0,
+        )
+
+        assert app._permission_task is not None
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+
 class TestChatTerminalHandling:
     """终态通知处理与 ack 前到达的缓冲。"""
 

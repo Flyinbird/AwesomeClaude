@@ -13,12 +13,14 @@ from awesome_claude.client.transport.connection import ClientConnection
 from awesome_claude.protocol.methods import (
     METHOD_CHAT,
     METHOD_ECHO,
+    METHOD_PERMISSION_RESPOND,
     METHOD_PING,
     METHOD_SESSION_ATTACH,
     NOTIFY_CHAT_COMPLETED,
     NOTIFY_CHAT_FAILED,
     NOTIFY_CHAT_HEARTBEAT,
     NOTIFY_CHAT_INTERRUPTED,
+    NOTIFY_CHAT_PERMISSION_REQUESTED,
     NOTIFY_CHAT_PLAN_UPDATED,
     NOTIFY_CHAT_STREAM,
     NOTIFY_CHAT_TOOL_FINISHED,
@@ -76,6 +78,7 @@ class CLIApp:
         self._awaiting_run_id: str | None = None
         self._pending_terminal: tuple[str, dict[str, Any]] | None = None
         self._completion_event: asyncio.Event | None = None
+        self._permission_task: asyncio.Task[None] | None = None
         self._heartbeat_interval_ms = 15000
         self._logger = get_app_logger("client.cli")
 
@@ -116,6 +119,9 @@ class CLIApp:
         conn.on_notification(NOTIFY_CHAT_TOOL_FINISHED, self._handle_tool_finished)
         conn.on_notification(NOTIFY_CHAT_INTERRUPTED, self._handle_interrupted)
         conn.on_notification(NOTIFY_CHAT_PLAN_UPDATED, self._handle_plan_updated)
+        conn.on_notification(
+            NOTIFY_CHAT_PERMISSION_REQUESTED, self._handle_permission_requested
+        )
         conn.on_disconnect(self._handle_disconnect)
 
     async def _attach(self, conn: ClientConnection) -> None:
@@ -206,6 +212,57 @@ class CLIApp:
         tasks = params.get("tasks", [])
         if isinstance(tasks, list):
             self._renderer.render_plan(tasks)
+
+    async def _handle_permission_requested(self, params: dict[str, Any]) -> None:
+        """处理审批请求：打印提示并调度独立的交互 task。
+
+        该 handler 由接收器读循环内联调用。若在此直接等待用户输入并发送
+        ``permission.respond``，则会阻塞读循环，使该请求的响应永远无法被
+        读取（自锁），并连带吞掉心跳。因此这里仅渲染提示并把交互流程调度
+        为独立 task，立即返回读循环。
+        """
+        request_id = str(params.get("request_id", ""))
+        tool_name = str(params.get("tool_name", ""))
+        action = str(params.get("action", ""))
+        self._renderer.render_permission_requested(tool_name, action, request_id)
+        self._permission_task = asyncio.create_task(
+            self._collect_permission_decision(request_id)
+        )
+
+    async def _collect_permission_decision(self, request_id: str) -> None:
+        """等待用户 y/n 输入并发送 permission.respond。
+
+        Args:
+            request_id: 审批请求标识。
+        """
+        decision: str | None = None
+        while decision is None:
+            try:
+                raw = await asyncio.to_thread(input, "允许执行? (y/n): ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                decision = "deny"
+                break
+            choice = raw.strip().lower()
+            if choice in ("y", "yes"):
+                decision = "allow"
+            elif choice in ("n", "no"):
+                decision = "deny"
+            else:
+                print("无效输入，请输入 y 或 n")
+
+        conn = self._connection
+        if conn is None:
+            return
+        try:
+            resp = await conn.send_request(
+                METHOD_PERMISSION_RESPOND,
+                {"request_id": request_id, "decision": decision},
+            )
+            if "error" in resp:
+                self._renderer.render_error(resp["error"])
+        except (ConnectionError, OSError) as exc:
+            self._logger.warning("permission respond failed", exc=exc)
 
     async def _process_line(self, line: str, conn: ClientConnection) -> bool:
         """处理一行输入；返回 False 表示退出。"""

@@ -7,6 +7,7 @@ from awesome_claude.shared.types import ChatResponse
 __all__ = [
     "METHOD_CHAT",
     "METHOD_ECHO",
+    "METHOD_PERMISSION_RESPOND",
     "METHOD_PING",
     "METHOD_SESSION_ATTACH",
     "METHOD_SESSION_DETACH",
@@ -15,6 +16,7 @@ __all__ = [
     "NOTIFY_CHAT_FAILED",
     "NOTIFY_CHAT_HEARTBEAT",
     "NOTIFY_CHAT_INTERRUPTED",
+    "NOTIFY_CHAT_PERMISSION_REQUESTED",
     "NOTIFY_CHAT_PLAN_UPDATED",
     "NOTIFY_CHAT_STREAM",
     "NOTIFY_CHAT_TOOL_FINISHED",
@@ -30,6 +32,9 @@ __all__ = [
     "EchoResult",
     "InterruptedNotificationParams",
     "Method",
+    "PermissionRequestNotificationParams",
+    "PermissionRespondParams",
+    "PermissionRespondResult",
     "PingParams",
     "PingResult",
     "PlanTaskSnapshot",
@@ -44,7 +49,13 @@ __all__ = [
 ]
 
 type Method = Literal[
-    "ping", "echo", "shutdown", "chat", "session.attach", "session.detach"
+    "ping",
+    "echo",
+    "shutdown",
+    "chat",
+    "session.attach",
+    "session.detach",
+    "permission.respond",
 ]
 
 METHOD_PING: Method = "ping"
@@ -53,6 +64,7 @@ METHOD_SHUTDOWN: Method = "shutdown"
 METHOD_CHAT: Method = "chat"
 METHOD_SESSION_ATTACH: Method = "session.attach"
 METHOD_SESSION_DETACH: Method = "session.detach"
+METHOD_PERMISSION_RESPOND: Method = "permission.respond"
 
 NOTIFY_CHAT_STREAM: str = "chat.stream"
 NOTIFY_CHAT_COMPLETED: str = "chat.completed"
@@ -63,6 +75,7 @@ NOTIFY_CHAT_TOOL_STARTED: str = "chat.tool_started"
 NOTIFY_CHAT_TOOL_FINISHED: str = "chat.tool_finished"
 NOTIFY_CHAT_INTERRUPTED: str = "chat.interrupted"
 NOTIFY_CHAT_PLAN_UPDATED: str = "chat.plan_updated"
+NOTIFY_CHAT_PERMISSION_REQUESTED: str = "chat.permission_requested"
 
 
 class PingParams(TypedDict):
@@ -213,3 +226,28 @@ class PlanUpdatedNotificationParams(TypedDict):
     run_id: str
     session_id: NotRequired[str | None]
     tasks: list[PlanTaskSnapshot]
+
+
+class PermissionRequestNotificationParams(TypedDict):
+    """chat.permission_requested 审批请求通知参数（Server → Client 推送）。"""
+
+    request_id: str
+    tool_name: str
+    action: str
+    resources: list[str]
+    run_id: str
+    step_index: int
+    session_id: NotRequired[str | None]
+
+
+class PermissionRespondParams(TypedDict):
+    """permission.respond 方法参数（Client → Server 回复审批决定）。"""
+
+    request_id: str
+    decision: Literal["allow", "deny"]
+
+
+class PermissionRespondResult(TypedDict):
+    """permission.respond 方法返回值。"""
+
+    ok: bool

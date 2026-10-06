@@ -10,6 +10,7 @@ from awesome_claude.core.agent.prompt import PromptContext, ToolBrief
 from awesome_claude.core.config import ServerConfig, load_server_config
 from awesome_claude.core.llm.anthropic_client import AnthropicClient
 from awesome_claude.core.llm.base import LLMProvider
+from awesome_claude.core.permissions.broker import InteractiveBroker
 from awesome_claude.core.permissions.policy import PermissionPolicy
 from awesome_claude.core.router.context import HandlerContext
 from awesome_claude.core.router.dispatcher import create_dispatcher
@@ -34,6 +35,7 @@ def build_context_factory(
     agent_loop: AgentLoop,
     system_prompt: PromptContext | None = None,
     permission_policy: PermissionPolicy | None = None,
+    permission_broker: InteractiveBroker | None = None,
 ) -> Callable[[SessionChannel], HandlerContext]:
     """构造会话上下文工厂。
 
@@ -44,6 +46,7 @@ def build_context_factory(
         agent_loop: Agent 循环编排器。
         system_prompt: System Prompt 静态上下文（可选）。
         permission_policy: 进程级工具权限策略（可选）。
+        permission_broker: 全局交互式审批通道（可选）。
 
     Returns:
         接收 SessionChannel 并返回 HandlerContext 的工厂函数。
@@ -58,6 +61,7 @@ def build_context_factory(
             agent_loop=agent_loop,
             system_prompt=system_prompt,
             permission_policy=permission_policy,
+            permission_broker=permission_broker,
         )
 
     return factory
@@ -121,8 +125,17 @@ async def run_server(config: ServerConfig | None = None) -> None:
     permission_policy = PermissionPolicy(global_default=config.permission_default)
     dispatcher = create_dispatcher()
     session_registry = SessionRegistry()
+    permission_broker = InteractiveBroker(
+        session_registry, timeout=config.permission_timeout
+    )
     context_factory = build_context_factory(
-        trace_store, llm_client, config, agent_loop, system_prompt, permission_policy
+        trace_store,
+        llm_client,
+        config,
+        agent_loop,
+        system_prompt,
+        permission_policy,
+        permission_broker,
     )
     server = TCPServer(
         config.host, config.port, dispatcher, context_factory, session_registry

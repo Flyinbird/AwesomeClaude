@@ -103,6 +103,19 @@ class StreamRenderer:
         """
         print(f"👤 其他客户端: {message}")
 
+    def render_permission_requested(
+        self, tool_name: str, action: str, request_id: str
+    ) -> None:
+        """渲染审批请求提示。
+
+        Args:
+            tool_name: 工具名。
+            action: 面向人的动作描述。
+            request_id: 审批请求标识。
+        """
+        desc = action if action else f"调用工具 {tool_name}"
+        print(f"\n🔒 权限审批 [{request_id}]: {desc}")
+
     def render_history(self, history: list[dict[str, Any]]) -> None:
         """渲染会话历史回放。
 

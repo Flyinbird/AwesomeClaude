@@ -26,6 +26,7 @@ class ServerConfig:
     fs_max_write: int = 100000
     heartbeat_interval: float = 15.0
     permission_default: PermissionDecision = PermissionDecision.ALLOW
+    permission_timeout: int = 60
 
     @classmethod
     def from_env(cls) -> "ServerConfig":
@@ -45,15 +46,16 @@ def load_server_config() -> ServerConfig:
         AWESOME_CLAUDE_FS_MAX_READ、AWESOME_CLAUDE_FS_MAX_WRITE、
         AWESOME_CLAUDE_HEARTBEAT_INTERVAL（对话心跳间隔秒数，默认 15）、
         AWESOME_CLAUDE_PERMISSION_DEFAULT（工具权限全局默认姿态，
-        allow/deny/ask 之一，默认 allow）。
+        allow/deny/ask 之一，默认 allow）、
+        AWESOME_CLAUDE_PERMISSION_TIMEOUT（交互式审批超时秒数，默认 60）。
 
     Returns:
         服务端配置。
 
     Raises:
         ValueError: 缺少必需的 ANTHROPIC_API_KEY，或 PORT/MAX_TOKENS/
-            FS_MAX_READ/FS_MAX_WRITE 不是整数，或 HEARTBEAT_INTERVAL
-            不是数字，或 PERMISSION_DEFAULT 不是合法姿态。
+            FS_MAX_READ/FS_MAX_WRITE/PERMISSION_TIMEOUT 不是整数，或
+            HEARTBEAT_INTERVAL 不是数字，或 PERMISSION_DEFAULT 不是合法姿态。
     """
     load_dotenv()
 
@@ -78,6 +80,7 @@ def load_server_config() -> ServerConfig:
         permission_default=_env_decision(
             "AWESOME_CLAUDE_PERMISSION_DEFAULT", PermissionDecision.ALLOW
         ),
+        permission_timeout=_env_int("AWESOME_CLAUDE_PERMISSION_TIMEOUT", 60),
     )
 
 

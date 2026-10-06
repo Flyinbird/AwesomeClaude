@@ -75,6 +75,21 @@ class SessionRegistry:
         """
         return self._sessions.get(session_id)
 
+    def get_session_by_run_id(self, run_id: str) -> Session | None:
+        """按 Run ID 反向查找所属会话。
+
+        Args:
+            run_id: Run 标识。
+
+        Returns:
+            包含该活跃 Run 的会话，不存在时返回 None。
+        """
+        for session in self._sessions.values():
+            run = session.active_run
+            if run is not None and run.run_id == run_id:
+                return session
+        return None
+
     def get_or_create(self, session_id: str, *, ephemeral: bool = False) -> Session:
         """按 ID 获取会话，不存在时创建。
 

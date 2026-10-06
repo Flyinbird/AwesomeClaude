@@ -63,6 +63,15 @@ class PermissionManager:
         await self._record(stage, request, outcome.decision, outcome.reason)
         return outcome
 
+    def cancel_pending_for_run(self, run_id: str) -> None:
+        """Run 被取消时，清理其下所有 pending 审批。
+
+        Args:
+            run_id: 目标 Run 标识。
+        """
+        if hasattr(self._broker, "cancel_for_run"):
+            self._broker.cancel_for_run(run_id)
+
     async def _record(
         self,
         stage: TraceStage,

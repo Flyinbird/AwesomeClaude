@@ -10,6 +10,7 @@ from awesome_claude.client.transport.connection import ClientConnection
 from awesome_claude.core.agent.loop import AgentLoop
 from awesome_claude.core.config import ServerConfig
 from awesome_claude.core.llm.events import DoneEvent, TextDeltaEvent, ToolUseEndEvent
+from awesome_claude.core.permissions.broker import NonInteractiveBroker
 from awesome_claude.core.permissions.policy import PermissionPolicy
 from awesome_claude.core.permissions.types import PermissionDecision
 from awesome_claude.core.router.context import HandlerContext
@@ -102,6 +103,7 @@ async def _build_server(
             config=config,
             agent_loop=AgentLoop(llm, registry),
             permission_policy=policy,
+            permission_broker=NonInteractiveBroker(),
         )
 
     server = TCPServer(

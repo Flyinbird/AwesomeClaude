@@ -8,6 +8,7 @@ from awesome_claude.protocol.errors import METHOD_NOT_FOUND, build_error_respons
 from awesome_claude.protocol.methods import (
     METHOD_CHAT,
     METHOD_ECHO,
+    METHOD_PERMISSION_RESPOND,
     METHOD_PING,
     METHOD_SESSION_ATTACH,
     METHOD_SESSION_DETACH,
@@ -68,6 +69,7 @@ def create_dispatcher() -> Dispatcher:
     """
     from awesome_claude.core.handlers.chat import handle_chat
     from awesome_claude.core.handlers.echo import handle_echo
+    from awesome_claude.core.handlers.permission import handle_permission_respond
     from awesome_claude.core.handlers.ping import handle_ping
     from awesome_claude.core.handlers.session import (
         handle_session_attach,
@@ -82,4 +84,5 @@ def create_dispatcher() -> Dispatcher:
     dispatcher.register(METHOD_CHAT, handle_chat)
     dispatcher.register(METHOD_SESSION_ATTACH, handle_session_attach)
     dispatcher.register(METHOD_SESSION_DETACH, handle_session_detach)
+    dispatcher.register(METHOD_PERMISSION_RESPOND, handle_permission_respond)
     return dispatcher
